@@ -2,7 +2,7 @@
 main.cpp
 
 GPT MMD TOOLS
-Cinema 4D R19 PMX Scene Loader - STEP 08
+Cinema 4D R19 PMX Scene Loader - STEP 08.2
 
 Cinema 4D R19
 Visual Studio 2015
@@ -20,36 +20,40 @@ Filename / BaseFile経由で直接読み込み、
 6. PMX Texture解析
 7. PMX Material解析
 8. C4D PolygonObject生成
-9. PMX Vertex Normal → C4D NormalTag
-10. PMX Vertex UV → C4D UVWTag
-11. PMX Material → C4D BaseMaterial
-12. PMX Material Name → C4D Material Name
-13. PMX Texture Path → 絶対パスで実ファイル確認
-14. PMX Texture Path → 相対FilenameとしてBitmap Shaderへ保存
+9. PMX Vertex Normal -> C4D NormalTag
+10. PMX Vertex UV -> C4D UVWTag
+11. PMX Material -> C4D BaseMaterial
+12. PMX Material Name -> C4D Material Name
+13. PMX Texture Path -> 絶対パスで実ファイル確認
+14. PMX Texture Path -> 相対FilenameとしてBitmap Shaderへ保存
 15. Bitmap Shader生成
-16. Bitmap Shader → Material Color Shader
-17. Bitmap Shader → Material Alpha Shader
-18. Material Alpha Image Alpha → ON
-19. PMX Diffuse Alpha → Material Alpha Color
+16. Bitmap Shader -> Material Color Shader
+17. Bitmap Shader -> Material Alpha Shader
+18. Material Alpha Image Alpha -> ON
+19. PMX Diffuse Alpha -> Material Alpha Color
 20. TextureTag生成
 21. MaterialごとのPolygon範囲へ割り当て
 22. Material名と同じ名前のSelectionTag生成
 23. TphongによるPhong / Smooth Tag生成
 24. ドキュメントへ挿入
 
-STEP 08変更内容：
+STEP 08.2変更内容：
 
-・STEP 07のPMX Readerを維持。
-・PMX Index読み取りをlibMMD準拠で維持。
-・Vertex / Face / Texture / Material診断を維持。
-・インポート時設定ダイアログを追加。
-・1オブジェクト統合モードを追加。
-・マテリアルごとにPolygonObjectを分離するモードを追加。
-・インポートサイズ入力を追加。
-・インポートサイズ初期値は10.0。
-・任意の数値入力に対応。
-・サイズはObject Scaleではなく頂点座標へ直接適用。
-・将来のBone / Morphでも同一スケール値を使用できる構造にする。
+・STEP 08.1のPMX Readerを維持。
+・STEP 08.1のMaterial Separationを維持。
+・STEP 08.1のCombined Objectを維持。
+・インポートダイアログを日本語化。
+・インポートサイズを「最終モデル高さ」ではなく「インポート倍率」として扱う。
+・デフォルト倍率は10.0。
+・1.0 = PMX元サイズ。
+・2.0 = PMX元サイズの2倍。
+・5.0 = PMX元サイズの5倍。
+・10.0 = PMX元サイズの10倍。
+・PMX頂点Y方向Bounding Boxによるサイズ正規化は行わない。
+・PMX頂点座標へ入力倍率を直接適用する。
+・Combined / Material Separatedの両方で同一倍率を使用。
+・将来のBone / Morphでも同一インポート倍率を使用できる構造を維持。
+・STEP 08.1のTARGET SIZE関連処理を削除。
 ・Cinema 4D R19 / Visual Studio 2015互換。
 
 重要：
@@ -99,12 +103,26 @@ enum PMXImportMode
 struct PMXImportSettings
 {
 	PMXImportMode mode;
-	Float scale;
+
+	// ユーザーが入力する「インポート倍率」
+	//
+	// 1.0  = 元サイズ
+	// 2.0  = 2倍
+	// 5.0  = 5倍
+	// 10.0 = 10倍
+	Float importScale;
+
+	// PMX座標へ実際に掛ける倍率。
+	// STEP 08.2ではimportScaleをそのまま使用する。
+	Float actualScale;
 
 	PMXImportSettings()
 	{
 		mode = PMX_IMPORT_COMBINED;
-		scale = 10.0;
+
+		importScale = 10.0;
+
+		actualScale = 10.0;
 	}
 };
 
@@ -132,7 +150,7 @@ public:
 	Bool CreateLayout()
 	{
 		SetTitle(
-			String("GPT MMD TOOLS - PMX IMPORT")
+			String("GPT MMD TOOLS - PMX インポート")
 		);
 
 
@@ -151,7 +169,7 @@ public:
 			BFH_LEFT,
 			0,
 			0,
-			String("オブジェクト構造"),
+			String("インポート方式"),
 			0
 		);
 
@@ -167,14 +185,14 @@ public:
 		AddChild(
 			1002,
 			PMX_IMPORT_COMBINED,
-			String("1オブジェクトに統合")
+			String("1つのオブジェクト")
 		);
 
 
 		AddChild(
 			1002,
 			PMX_IMPORT_MATERIAL_SEPARATED,
-			String("マテリアルごとに分離")
+			String("材質ごとに分離")
 		);
 
 
@@ -183,7 +201,7 @@ public:
 			BFH_LEFT,
 			0,
 			0,
-			String("インポートサイズ"),
+			String("インポート倍率"),
 			0
 		);
 
@@ -246,7 +264,7 @@ public:
 
 		SetFloat(
 			1004,
-			_settings.scale,
+			_settings.importScale,
 			0.000001,
 			1000000.0,
 			0.1
@@ -287,23 +305,23 @@ public:
 			}
 
 
-			Float scale;
+			Float importScale;
 
 
 			if (!GetFloat(
 				1004,
-				scale
+				importScale
 			))
 			{
-				scale = 10.0;
+				importScale = 10.0;
 			}
 
 
-			if (scale <= 0.0)
+			if (importScale <= 0.0)
 			{
 				MessageDialog(
 					String(
-						"インポートサイズには0より大きい数値を入力してください。"
+						"インポート倍率は0より大きい値を入力してください。"
 					)
 				);
 
@@ -324,8 +342,14 @@ public:
 			}
 
 
-			_settings.scale =
-				scale;
+			_settings.importScale =
+				importScale;
+
+
+			// STEP 08.2：
+			// 入力された倍率をそのまま実スケールとして使用する。
+			_settings.actualScale =
+				importScale;
 
 
 			_accepted = true;
@@ -3339,15 +3363,6 @@ private:
 		}
 
 
-		/*
-		分離Objectでは、
-		元PMXのPolygon順をそのまま維持する。
-
-		この段階ではPointも共有したままではなく、
-		使用されたPointだけをローカルPointへ再構成する。
-		*/
-
-
 		std::vector<Int32> globalToLocal;
 
 
@@ -3527,15 +3542,6 @@ private:
 									);
 		}
 
-
-		/*
-		Normal / UVは元PMXのglobal pointから
-		取得する。
-
-		PMX Normal / UVはVertex単位なので、
-		PolygonObject側のローカルPoint順に合わせて
-		各Polygonの値を再構成する。
-		*/
 
 		std::vector<Int32> normalUVIndices;
 
@@ -3719,24 +3725,6 @@ public:
 			return false;
 
 
-		GePrint(
-			"PMX IMPORT MODE : " +
-			String::IntToString(
-				static_cast<Int32>(
-					settings.mode
-					)
-			)
-		);
-
-
-		GePrint(
-			"PMX IMPORT SCALE : " +
-			String::FloatToString(
-				settings.scale
-			)
-		);
-
-
 		if (!Open(filename))
 			return false;
 
@@ -3805,6 +3793,42 @@ public:
 
 
 		// ====================================================
+		// Import Scale
+		// ====================================================
+
+		PMXImportSettings calculatedSettings =
+			settings;
+
+
+		// STEP 08.2：
+		// 高さから倍率を算出しない。
+		// ダイアログで入力された倍率をそのまま使用する。
+		calculatedSettings.actualScale =
+			settings.importScale;
+
+
+		GePrint(
+			"PMX IMPORT MODE : " +
+			String(
+				settings.mode ==
+				PMX_IMPORT_COMBINED
+				?
+				"COMBINED"
+				:
+				"MATERIAL SEPARATED"
+			)
+		);
+
+
+		GePrint(
+			"PMX IMPORT SCALE : " +
+			String::FloatToString(
+				calculatedSettings.actualScale
+			)
+		);
+
+
+		// ====================================================
 		// Combined
 		// ====================================================
 
@@ -3815,7 +3839,7 @@ public:
 				BuildCombinedObject(
 					vertices,
 					indices,
-					settings.scale
+					calculatedSettings.actualScale
 				);
 
 
@@ -3943,7 +3967,7 @@ public:
 						vertices,
 						indices,
 						pmxMaterial,
-						settings.scale
+						calculatedSettings.actualScale
 					);
 
 
@@ -4054,11 +4078,10 @@ public:
 
 
 		GePrint(
-			"STEP 08 : "
-			"STEP 07 BASE + "
-			"IMPORT MODE + "
-			"MATERIAL SEPARATION + "
-			"IMPORT SCALE"
+			"STEP 08.2 : "
+			"STEP 08 BASE + "
+			"JAPANESE IMPORT DIALOG + "
+			"DIRECT IMPORT SCALE"
 		);
 
 
@@ -4132,12 +4155,17 @@ FILEERROR GPTMMDPMXLoader::Load(
 
 
 	GePrint(
-		"PMX SCENE LOADER - STEP 08"
+		"PMX SCENE LOADER - STEP 08.2"
 	);
 
 
 	GePrint(
 		"Cinema 4D : R19"
+	);
+
+
+	GePrint(
+		"Visual Studio : 2015"
 	);
 
 
@@ -4170,6 +4198,7 @@ FILEERROR GPTMMDPMXLoader::Load(
 			"PMX IMPORT DIALOG : OPEN FAILED"
 		);
 
+
 		if (error)
 		{
 			*error =
@@ -4177,6 +4206,7 @@ FILEERROR GPTMMDPMXLoader::Load(
 					"GPT MMD TOOLS : IMPORT DIALOG FAILED"
 				);
 		}
+
 
 		return FILEERROR_INVALID;
 	}
@@ -4194,24 +4224,6 @@ FILEERROR GPTMMDPMXLoader::Load(
 
 	const PMXImportSettings& settings =
 		dialog.GetSettings();
-
-
-	GePrint(
-		"PMX IMPORT SCALE : " +
-		String::FloatToString(
-			settings.scale
-		)
-	);
-
-
-	GePrint(
-		"PMX IMPORT MODE : " +
-		String::IntToString(
-			static_cast<Int32>(
-				settings.mode
-				)
-		)
-	);
 
 
 	// ========================================================
