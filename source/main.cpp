@@ -1,8 +1,8 @@
-﻿/*
+/*
 main.cpp
 
 GPT MMD TOOLS
-Cinema 4D R19 PMX Scene Loader - STEP 07
+Cinema 4D R19 PMX Scene Loader - STEP 08
 
 処理内容：
 PMXファイルをCinema 4D R19の
@@ -33,24 +33,20 @@ Filename / BaseFile経由で直接読み込み、
 23. TphongによるPhong / Smooth Tag生成
 24. ドキュメントへ挿入
 
-STEP 07変更内容：
+STEP 08変更内容：
 
-・PMX Index読み取りをlibMMD準拠へ修正。
-・1 byte Indexは0xFFだけを-1として扱う。
-・2 byte Indexは0xFFFFだけを-1として扱う。
-・通常の128～254 / 32768～65534等を負数化しない。
-・Reader内部で現在の読み取りバイト位置を追跡する。
-・Vertex / Face / Texture / Material各段階の失敗位置を診断する。
-・Face Indexの読み取り失敗位置を診断する。
-・Material各フィールドの読み取り失敗位置を診断する。
-・PMX ReaderとC4D生成側の検証を分離する。
-・既存STEP 06 FIX6のC4D生成処理を維持する。
-・BDEF1 / BDEF2 / BDEF4 / SDEF / QDEFを維持する。
+・STEP 07のPMX Readerを維持。
+・PMX Index読み取りをlibMMD準拠で維持。
+・Vertex / Face / Texture / Material診断を維持。
+・インポート時設定ダイアログを追加。
+・1オブジェクト統合モードを追加。
+・マテリアルごとにPolygonObjectを分離するモードを追加。
+・インポートサイズ入力を追加。
+・インポートサイズ初期値は10.0。
+・任意の数値入力に対応。
+・サイズはObject Scaleではなく頂点座標へ直接適用。
+・将来のBone / Morphでも同一スケール値を使用できる構造にする。
 ・Cinema 4D R19 / Visual Studio 2013互換。
-
-参考基準：
-MMD Tools / Blender
-libMMD / PMXFile.cpp
 
 重要：
 PMXの可変Indexは「符号付き整数」ではない。
@@ -83,6 +79,279 @@ C++
 #include "main.h"
 
 #include <vector>
+
+
+// ============================================================
+// Import Mode
+// ============================================================
+
+enum PMXImportMode
+{
+	PMX_IMPORT_COMBINED = 0,
+	PMX_IMPORT_MATERIAL_SEPARATED = 1
+};
+
+
+// ============================================================
+// PMX Import Settings
+// ============================================================
+
+struct PMXImportSettings
+{
+	PMXImportMode mode;
+	Float scale;
+
+	PMXImportSettings()
+	{
+		mode = PMX_IMPORT_COMBINED;
+		scale = 10.0;
+	}
+};
+
+
+// ============================================================
+// PMX Import Dialog
+// ============================================================
+
+class PMXImportDialog : public GeDialog
+{
+private:
+
+	PMXImportSettings _settings;
+	Bool _accepted;
+
+
+public:
+
+	PMXImportDialog()
+	{
+		_accepted = false;
+	}
+
+
+	Bool CreateLayout()
+	{
+		SetTitle(
+			String("GPT MMD TOOLS - PMX IMPORT")
+		);
+
+
+		GroupBegin(
+			1000,
+			GROUPTYPE_ROWS,
+			1,
+			0,
+			String()
+		);
+
+
+		AddStaticText(
+			1001,
+			BFH_LEFT,
+			0,
+			0,
+			String("オブジェクト構造"),
+			0
+		);
+
+
+		AddComboBox(
+			1002,
+			BFH_LEFT,
+			180,
+			0
+		);
+
+
+		AddChild(
+			1002,
+			PMX_IMPORT_COMBINED,
+			String("1オブジェクトに統合")
+		);
+
+
+		AddChild(
+			1002,
+			PMX_IMPORT_MATERIAL_SEPARATED,
+			String("マテリアルごとに分離")
+		);
+
+
+		AddStaticText(
+			1003,
+			BFH_LEFT,
+			0,
+			0,
+			String("インポートサイズ"),
+			0
+		);
+
+
+		AddEditNumber(
+			1004,
+			BFH_LEFT,
+			180,
+			0
+		);
+
+
+		GroupEnd();
+
+
+		GroupBegin(
+			1100,
+			GROUPTYPE_COLS,
+			2,
+			0,
+			String()
+		);
+
+
+		AddButton(
+			1101,
+			BFH_RIGHT,
+			100,
+			0,
+			String("キャンセル")
+		);
+
+
+		AddButton(
+			1102,
+			BFH_RIGHT,
+			100,
+			0,
+			String("インポート")
+		);
+
+
+		GroupEnd();
+
+
+		return true;
+	}
+
+
+	Bool InitValues()
+	{
+		SetInt32(
+			1002,
+			static_cast<Int32>(
+				_settings.mode
+				)
+		);
+
+
+		SetReal(
+			1004,
+			_settings.scale,
+			0.000001,
+			1000000.0,
+			0.1
+		);
+
+
+		return true;
+	}
+
+
+	Bool Command(
+		Int32 id,
+		const BaseContainer& msg
+	)
+	{
+		if (id == 1101)
+		{
+			_accepted = false;
+
+			Close();
+
+			return true;
+		}
+
+
+		if (id == 1102)
+		{
+			Int32 mode;
+
+
+			if (!GetInt32(
+				1002,
+				mode
+			))
+			{
+				mode =
+					PMX_IMPORT_COMBINED;
+			}
+
+
+			Float scale;
+
+
+			if (!GetReal(
+				1004,
+				scale
+			))
+			{
+				scale = 10.0;
+			}
+
+
+			if (scale <= 0.0)
+			{
+				MessageDialog(
+					String(
+						"インポートサイズには0より大きい数値を入力してください。"
+					)
+				);
+
+				return true;
+			}
+
+
+			if (mode ==
+				PMX_IMPORT_MATERIAL_SEPARATED)
+			{
+				_settings.mode =
+					PMX_IMPORT_MATERIAL_SEPARATED;
+			}
+			else
+			{
+				_settings.mode =
+					PMX_IMPORT_COMBINED;
+			}
+
+
+			_settings.scale =
+				scale;
+
+
+			_accepted = true;
+
+			Close();
+
+			return true;
+		}
+
+
+		return GeDialog::Command(
+			id,
+			msg
+		);
+	}
+
+
+	const PMXImportSettings& GetSettings() const
+	{
+		return _settings;
+	}
+
+
+	Bool WasAccepted() const
+	{
+		return _accepted;
+	}
+};
 
 
 // ============================================================
@@ -169,28 +438,8 @@ private:
 
 	Float32 _version;
 
-	/*
-	Reader自身が消費したバイト数を追跡する。
-
-	これはBaseFileの実装依存APIに頼らず、
-	現在のPMXストリーム位置を診断するための
-	内部カウンタである。
-	*/
 	UInt64 _readOffset;
 
-
-	/*
-	現在のReader処理段階。
-
-	例：
-
-	HEADER
-	MODEL INFO
-	VERTEX
-	FACE
-	TEXTURE
-	MATERIAL
-	*/
 	String _stage;
 
 
@@ -632,24 +881,6 @@ private:
 		Int32& value
 	)
 	{
-		/*
-		重要：
-
-		PMXの1byte / 2byte Indexは
-		通常のsigned integerとして読むものではない。
-
-		PMX仕様：
-
-		1 byte:
-		0x00～0xFE = 正のIndex
-		0xFF       = -1
-
-		2 byte:
-		0x0000～0xFFFE = 正のIndex
-		0xFFFF         = -1
-		*/
-
-
 		if (indexSize == 1)
 		{
 			UChar v;
@@ -660,14 +891,9 @@ private:
 
 
 			if (v == 0xFF)
-			{
 				value = -1;
-			}
 			else
-			{
-				value =
-					static_cast<Int32>(v);
-			}
+				value = static_cast<Int32>(v);
 
 
 			return true;
@@ -684,14 +910,9 @@ private:
 
 
 			if (v == 0xFFFF)
-			{
 				value = -1;
-			}
 			else
-			{
-				value =
-					static_cast<Int32>(v);
-			}
+				value = static_cast<Int32>(v);
 
 
 			return true;
@@ -707,22 +928,10 @@ private:
 				return false;
 
 
-			/*
-			PMX 4byte Indexは32bit値。
-
-			PMX仕様上の未指定値として
-			0xFFFFFFFFを-1相当として扱えるようにする。
-			*/
-
 			if (v == 0xFFFFFFFFu)
-			{
 				value = -1;
-			}
 			else
-			{
-				value =
-					static_cast<Int32>(v);
-			}
+				value = static_cast<Int32>(v);
 
 
 			return true;
@@ -867,10 +1076,6 @@ private:
 			return true;
 
 
-		// ----------------------------------------------------
-		// UTF-16LE
-		// ----------------------------------------------------
-
 		if (_encoding == 0)
 		{
 			const Int32 charCount =
@@ -946,10 +1151,6 @@ private:
 			return true;
 		}
 
-
-		// ----------------------------------------------------
-		// UTF-8
-		// ----------------------------------------------------
 
 		*result =
 			String(
@@ -1066,29 +1267,14 @@ private:
 		}
 
 
-		_encoding =
-			headerData[0];
-
-		_additionalUV =
-			headerData[1];
-
-		_vertexIndexSize =
-			headerData[2];
-
-		_textureIndexSize =
-			headerData[3];
-
-		_materialIndexSize =
-			headerData[4];
-
-		_boneIndexSize =
-			headerData[5];
-
-		_morphIndexSize =
-			headerData[6];
-
-		_rigidIndexSize =
-			headerData[7];
+		_encoding = headerData[0];
+		_additionalUV = headerData[1];
+		_vertexIndexSize = headerData[2];
+		_textureIndexSize = headerData[3];
+		_materialIndexSize = headerData[4];
+		_boneIndexSize = headerData[5];
+		_morphIndexSize = headerData[6];
+		_rigidIndexSize = headerData[7];
 
 
 		if (_encoding != 0 &&
@@ -1108,72 +1294,29 @@ private:
 		}
 
 
-		if (!IsValidIndexSize(
-			_vertexIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID VERTEX INDEX SIZE")
-			);
-		}
+		if (!IsValidIndexSize(_vertexIndexSize))
+			return ReaderFailed(String("INVALID VERTEX INDEX SIZE"));
 
+		if (!IsValidIndexSize(_textureIndexSize))
+			return ReaderFailed(String("INVALID TEXTURE INDEX SIZE"));
 
-		if (!IsValidIndexSize(
-			_textureIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID TEXTURE INDEX SIZE")
-			);
-		}
+		if (!IsValidIndexSize(_materialIndexSize))
+			return ReaderFailed(String("INVALID MATERIAL INDEX SIZE"));
 
+		if (!IsValidIndexSize(_boneIndexSize))
+			return ReaderFailed(String("INVALID BONE INDEX SIZE"));
 
-		if (!IsValidIndexSize(
-			_materialIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID MATERIAL INDEX SIZE")
-			);
-		}
+		if (!IsValidIndexSize(_morphIndexSize))
+			return ReaderFailed(String("INVALID MORPH INDEX SIZE"));
 
-
-		if (!IsValidIndexSize(
-			_boneIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID BONE INDEX SIZE")
-			);
-		}
-
-
-		if (!IsValidIndexSize(
-			_morphIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID MORPH INDEX SIZE")
-			);
-		}
-
-
-		if (!IsValidIndexSize(
-			_rigidIndexSize
-		))
-		{
-			return ReaderFailed(
-				String("INVALID RIGID INDEX SIZE")
-			);
-		}
+		if (!IsValidIndexSize(_rigidIndexSize))
+			return ReaderFailed(String("INVALID RIGID INDEX SIZE"));
 
 
 		GePrint(
 			"PMX VERSION : " +
 			String::FloatToString(
-				static_cast<Float>(
-					_version
-					)
+				static_cast<Float>(_version)
 			)
 		);
 
@@ -1181,9 +1324,7 @@ private:
 		GePrint(
 			"PMX HEADER SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					headerSize
-					)
+				static_cast<Int32>(headerSize)
 			)
 		);
 
@@ -1191,9 +1332,7 @@ private:
 		GePrint(
 			"PMX ENCODING : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_encoding
-					)
+				static_cast<Int32>(_encoding)
 			)
 		);
 
@@ -1201,9 +1340,7 @@ private:
 		GePrint(
 			"PMX ADDITIONAL UV : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_additionalUV
-					)
+				static_cast<Int32>(_additionalUV)
 			)
 		);
 
@@ -1211,9 +1348,7 @@ private:
 		GePrint(
 			"PMX VERTEX INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_vertexIndexSize
-					)
+				static_cast<Int32>(_vertexIndexSize)
 			)
 		);
 
@@ -1221,9 +1356,7 @@ private:
 		GePrint(
 			"PMX TEXTURE INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_textureIndexSize
-					)
+				static_cast<Int32>(_textureIndexSize)
 			)
 		);
 
@@ -1231,9 +1364,7 @@ private:
 		GePrint(
 			"PMX MATERIAL INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_materialIndexSize
-					)
+				static_cast<Int32>(_materialIndexSize)
 			)
 		);
 
@@ -1241,9 +1372,7 @@ private:
 		GePrint(
 			"PMX BONE INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_boneIndexSize
-					)
+				static_cast<Int32>(_boneIndexSize)
 			)
 		);
 
@@ -1251,9 +1380,7 @@ private:
 		GePrint(
 			"PMX MORPH INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_morphIndexSize
-					)
+				static_cast<Int32>(_morphIndexSize)
 			)
 		);
 
@@ -1261,9 +1388,7 @@ private:
 		GePrint(
 			"PMX RIGID INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_rigidIndexSize
-					)
+				static_cast<Int32>(_rigidIndexSize)
 			)
 		);
 
@@ -1295,27 +1420,16 @@ private:
 
 
 		if (!ReadPMXString())
-			return ReaderFailed(
-				String("MODEL NAME")
-			);
-
+			return ReaderFailed(String("MODEL NAME"));
 
 		if (!ReadPMXString())
-			return ReaderFailed(
-				String("MODEL NAME UNIVERSAL")
-			);
-
+			return ReaderFailed(String("MODEL NAME UNIVERSAL"));
 
 		if (!ReadPMXString())
-			return ReaderFailed(
-				String("COMMENT")
-			);
-
+			return ReaderFailed(String("COMMENT"));
 
 		if (!ReadPMXString())
-			return ReaderFailed(
-				String("COMMENT UNIVERSAL")
-			);
+			return ReaderFailed(String("COMMENT UNIVERSAL"));
 
 
 		GePrint(
@@ -1349,45 +1463,29 @@ private:
 		Int32 vertexCount;
 
 
-		if (!ReadInt32(
-			vertexCount
-		))
-		{
-			return ReaderFailed(
-				String("VERTEX COUNT READ")
-			);
-		}
+		if (!ReadInt32(vertexCount))
+			return ReaderFailed(String("VERTEX COUNT READ"));
 
 
 		if (vertexCount <= 0)
-		{
-			return ReaderFailed(
-				String("INVALID VERTEX COUNT")
-			);
-		}
+			return ReaderFailed(String("INVALID VERTEX COUNT"));
 
 
 		try
 		{
 			vertices.resize(
-				static_cast<size_t>(
-					vertexCount
-					)
+				static_cast<size_t>(vertexCount)
 			);
 		}
 		catch (...)
 		{
-			return ReaderFailed(
-				String("VERTEX VECTOR ALLOC")
-			);
+			return ReaderFailed(String("VERTEX VECTOR ALLOC"));
 		}
 
 
 		GePrint(
 			"PMX VERTEX COUNT : " +
-			String::IntToString(
-				vertexCount
-			)
+			String::IntToString(vertexCount)
 		);
 
 
@@ -1403,30 +1501,11 @@ private:
 				];
 
 
-			if (!ReadVector3(
-				vertex.position
-			))
-			{
-				return VertexReadFailed(
-					i,
-					String("POSITION"),
-					0,
-					false
-				);
-			}
+			if (!ReadVector3(vertex.position))
+				return VertexReadFailed(i, String("POSITION"), 0, false);
 
-
-			if (!ReadVector3(
-				vertex.normal
-			))
-			{
-				return VertexReadFailed(
-					i,
-					String("NORMAL"),
-					0,
-					false
-				);
-			}
+			if (!ReadVector3(vertex.normal))
+				return VertexReadFailed(i, String("NORMAL"), 0, false);
 
 
 			Float32 u;
@@ -1434,25 +1513,10 @@ private:
 
 
 			if (!ReadFloat32(u))
-			{
-				return VertexReadFailed(
-					i,
-					String("UV U"),
-					0,
-					false
-				);
-			}
-
+				return VertexReadFailed(i, String("UV U"), 0, false);
 
 			if (!ReadFloat32(v))
-			{
-				return VertexReadFailed(
-					i,
-					String("UV V"),
-					0,
-					false
-				);
-			}
+				return VertexReadFailed(i, String("UV V"), 0, false);
 
 
 			vertex.uv =
@@ -1465,10 +1529,7 @@ private:
 
 			for (
 				Int32 uvIndex = 0;
-				uvIndex <
-				static_cast<Int32>(
-					_additionalUV
-					);
+				uvIndex < static_cast<Int32>(_additionalUV);
 				++uvIndex
 				)
 			{
@@ -1477,9 +1538,7 @@ private:
 					return VertexReadFailed(
 						i,
 						String("ADDITIONAL UV ") +
-						String::IntToString(
-							uvIndex
-						),
+						String::IntToString(uvIndex),
 						0,
 						false
 					);
@@ -1490,101 +1549,32 @@ private:
 			UChar weightType;
 
 
-			if (!ReadUChar(
-				weightType
-			))
-			{
-				return VertexReadFailed(
-					i,
-					String("WEIGHT TYPE"),
-					0,
-					false
-				);
-			}
+			if (!ReadUChar(weightType))
+				return VertexReadFailed(i, String("WEIGHT TYPE"), 0, false);
 
-
-			// ------------------------------------------------
-			// BDEF1
-			// ------------------------------------------------
 
 			if (weightType == 0)
 			{
 				Int32 boneIndex;
 
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF1 BONE"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadIndex(_boneIndexSize, boneIndex))
+					return VertexReadFailed(i, String("BDEF1 BONE"), weightType, true);
 			}
-
-
-			// ------------------------------------------------
-			// BDEF2
-			// ------------------------------------------------
-
 			else if (weightType == 1)
 			{
 				Int32 boneIndex1;
 				Int32 boneIndex2;
-
 				Float32 weight;
 
+				if (!ReadIndex(_boneIndexSize, boneIndex1))
+					return VertexReadFailed(i, String("BDEF2 BONE1"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex1
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF2 BONE1"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadIndex(_boneIndexSize, boneIndex2))
+					return VertexReadFailed(i, String("BDEF2 BONE2"), weightType, true);
 
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex2
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF2 BONE2"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadFloat32(
-					weight
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF2 WEIGHT"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadFloat32(weight))
+					return VertexReadFailed(i, String("BDEF2 WEIGHT"), weightType, true);
 			}
-
-
-			// ------------------------------------------------
-			// BDEF4
-			// ------------------------------------------------
-
 			else if (weightType == 2)
 			{
 				Int32 boneIndex1;
@@ -1597,112 +1587,30 @@ private:
 				Float32 weight3;
 				Float32 weight4;
 
+				if (!ReadIndex(_boneIndexSize, boneIndex1))
+					return VertexReadFailed(i, String("BDEF4 BONE1"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex1
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 BONE1"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadIndex(_boneIndexSize, boneIndex2))
+					return VertexReadFailed(i, String("BDEF4 BONE2"), weightType, true);
 
+				if (!ReadIndex(_boneIndexSize, boneIndex3))
+					return VertexReadFailed(i, String("BDEF4 BONE3"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex2
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 BONE2"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex3
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 BONE3"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex4
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 BONE4"),
-						weightType,
-						true
-					);
-				}
-
+				if (!ReadIndex(_boneIndexSize, boneIndex4))
+					return VertexReadFailed(i, String("BDEF4 BONE4"), weightType, true);
 
 				if (!ReadFloat32(weight1))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 WEIGHT1"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("BDEF4 WEIGHT1"), weightType, true);
 
 				if (!ReadFloat32(weight2))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 WEIGHT2"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("BDEF4 WEIGHT2"), weightType, true);
 
 				if (!ReadFloat32(weight3))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 WEIGHT3"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("BDEF4 WEIGHT3"), weightType, true);
 
 				if (!ReadFloat32(weight4))
-				{
-					return VertexReadFailed(
-						i,
-						String("BDEF4 WEIGHT4"),
-						weightType,
-						true
-					);
-				}
+					return VertexReadFailed(i, String("BDEF4 WEIGHT4"), weightType, true);
 			}
-
-
-			// ------------------------------------------------
-			// SDEF
-			// ------------------------------------------------
-
 			else if (weightType == 3)
 			{
 				Int32 boneIndex1;
@@ -1714,86 +1622,24 @@ private:
 				Vector r0;
 				Vector r1;
 
+				if (!ReadIndex(_boneIndexSize, boneIndex1))
+					return VertexReadFailed(i, String("SDEF BONE1"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex1
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF BONE1"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadIndex(_boneIndexSize, boneIndex2))
+					return VertexReadFailed(i, String("SDEF BONE2"), weightType, true);
 
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex2
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF BONE2"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadFloat32(
-					weight
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF WEIGHT"),
-						weightType,
-						true
-					);
-				}
-
+				if (!ReadFloat32(weight))
+					return VertexReadFailed(i, String("SDEF WEIGHT"), weightType, true);
 
 				if (!ReadVector3(c))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF C"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("SDEF C"), weightType, true);
 
 				if (!ReadVector3(r0))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF R0"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("SDEF R0"), weightType, true);
 
 				if (!ReadVector3(r1))
-				{
-					return VertexReadFailed(
-						i,
-						String("SDEF R1"),
-						weightType,
-						true
-					);
-				}
+					return VertexReadFailed(i, String("SDEF R1"), weightType, true);
 			}
-
-
-			// ------------------------------------------------
-			// QDEF
-			// ------------------------------------------------
-
 			else if (weightType == 4)
 			{
 				Int32 boneIndex1;
@@ -1806,108 +1652,30 @@ private:
 				Float32 weight3;
 				Float32 weight4;
 
+				if (!ReadIndex(_boneIndexSize, boneIndex1))
+					return VertexReadFailed(i, String("QDEF BONE1"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex1
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF BONE1"),
-						weightType,
-						true
-					);
-				}
+				if (!ReadIndex(_boneIndexSize, boneIndex2))
+					return VertexReadFailed(i, String("QDEF BONE2"), weightType, true);
 
+				if (!ReadIndex(_boneIndexSize, boneIndex3))
+					return VertexReadFailed(i, String("QDEF BONE3"), weightType, true);
 
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex2
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF BONE2"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex3
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF BONE3"),
-						weightType,
-						true
-					);
-				}
-
-
-				if (!ReadIndex(
-					_boneIndexSize,
-					boneIndex4
-				))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF BONE4"),
-						weightType,
-						true
-					);
-				}
-
+				if (!ReadIndex(_boneIndexSize, boneIndex4))
+					return VertexReadFailed(i, String("QDEF BONE4"), weightType, true);
 
 				if (!ReadFloat32(weight1))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF WEIGHT1"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("QDEF WEIGHT1"), weightType, true);
 
 				if (!ReadFloat32(weight2))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF WEIGHT2"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("QDEF WEIGHT2"), weightType, true);
 
 				if (!ReadFloat32(weight3))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF WEIGHT3"),
-						weightType,
-						true
-					);
-				}
-
+					return VertexReadFailed(i, String("QDEF WEIGHT3"), weightType, true);
 
 				if (!ReadFloat32(weight4))
-				{
-					return VertexReadFailed(
-						i,
-						String("QDEF WEIGHT4"),
-						weightType,
-						true
-					);
-				}
+					return VertexReadFailed(i, String("QDEF WEIGHT4"), weightType, true);
 			}
-
-
 			else
 			{
 				return VertexReadFailed(
@@ -1919,24 +1687,11 @@ private:
 			}
 
 
-			// ------------------------------------------------
-			// Edge Scale
-			// ------------------------------------------------
-
 			Float32 edgeScale;
 
 
-			if (!ReadFloat32(
-				edgeScale
-			))
-			{
-				return VertexReadFailed(
-					i,
-					String("EDGE SCALE"),
-					weightType,
-					true
-				);
-			}
+			if (!ReadFloat32(edgeScale))
+				return VertexReadFailed(i, String("EDGE SCALE"), weightType, true);
 		}
 
 
@@ -1972,52 +1727,27 @@ private:
 		Int32 indexCount;
 
 
-		if (!ReadInt32(
-			indexCount
-		))
-		{
-			return ReaderFailed(
-				String("FACE COUNT READ")
-			);
-		}
+		if (!ReadInt32(indexCount))
+			return ReaderFailed(String("FACE COUNT READ"));
 
 
 		if (indexCount <= 0)
-		{
-			return ReaderFailed(
-				String("INVALID FACE COUNT")
-			);
-		}
+			return ReaderFailed(String("INVALID FACE COUNT"));
 
 
 		GePrint(
 			"PMX FACE INDEX COUNT : " +
-			String::IntToString(
-				indexCount
-			)
+			String::IntToString(indexCount)
 		);
 
 
 		GePrint(
 			"PMX FACE VERTEX INDEX SIZE : " +
 			String::IntToString(
-				static_cast<Int32>(
-					_vertexIndexSize
-					)
+				static_cast<Int32>(_vertexIndexSize)
 			)
 		);
 
-
-		/*
-		libMMDではfaceCount / 3を
-		triangle countとして扱う。
-
-		正常なPMXでは必ず3の倍数になる。
-
-		ここでは即座にReaderを停止させず、
-		診断情報を出してfloor(indexCount / 3)個の
-		三角形を読む。
-		*/
 
 		if ((indexCount % 3) != 0)
 		{
@@ -2032,11 +1762,7 @@ private:
 
 
 		if (triangleCount <= 0)
-		{
-			return ReaderFailed(
-				String("FACE TRIANGLE COUNT = 0")
-			);
-		}
+			return ReaderFailed(String("FACE TRIANGLE COUNT = 0"));
 
 
 		const Int32 readableIndexCount =
@@ -2046,16 +1772,12 @@ private:
 		try
 		{
 			indices.resize(
-				static_cast<size_t>(
-					readableIndexCount
-					)
+				static_cast<size_t>(readableIndexCount)
 			);
 		}
 		catch (...)
 		{
-			return ReaderFailed(
-				String("FACE VECTOR ALLOC")
-			);
+			return ReaderFailed(String("FACE VECTOR ALLOC"));
 		}
 
 
@@ -2083,39 +1805,24 @@ private:
 
 				GePrint(
 					"  INDEX = " +
-					String::IntToString(
-						i
-					)
+					String::IntToString(i)
 				);
 
 				GePrint(
 					"  TRIANGLE = " +
-					String::IntToString(
-						i / 3
-					)
+					String::IntToString(i / 3)
 				);
 
 				GePrint(
 					"  OFFSET = " +
 					String::IntToString(
-						static_cast<Int32>(
-							indexOffset
-							)
+						static_cast<Int32>(indexOffset)
 					)
 				);
 
 				return false;
 			}
 
-
-			/*
-			Readerでは値を取得する。
-
-			ここではまだ範囲エラーで
-			Readerそのものを停止しない。
-
-			Validatorで後段にまとめて確認する。
-			*/
 
 			indices[
 				static_cast<size_t>(i)
@@ -2131,26 +1838,15 @@ private:
 
 		GePrint(
 			"PMX TRIANGLE COUNT : " +
-			String::IntToString(
-				triangleCount
-			)
+			String::IntToString(triangleCount)
 		);
 
-
-		/*
-		最初と最後のIndexを診断する。
-
-		これにより1byte Indexの128～254が
-		負数化されていた問題を確認しやすくする。
-		*/
 
 		if (!indices.empty())
 		{
 			GePrint(
 				"PMX FACE FIRST INDEX = " +
-				String::IntToString(
-					indices[0]
-				)
+				String::IntToString(indices[0])
 			);
 
 
@@ -2213,17 +1909,13 @@ private:
 				GePrint(
 					"  INDEX POSITION = " +
 					String::IntToString(
-						static_cast<Int32>(
-							i
-							)
+						static_cast<Int32>(i)
 					)
 				);
 
 				GePrint(
 					"  VALUE = " +
-					String::IntToString(
-						index
-					)
+					String::IntToString(index)
 				);
 
 				return false;
@@ -2239,24 +1931,18 @@ private:
 				GePrint(
 					"  INDEX POSITION = " +
 					String::IntToString(
-						static_cast<Int32>(
-							i
-							)
+						static_cast<Int32>(i)
 					)
 				);
 
 				GePrint(
 					"  VALUE = " +
-					String::IntToString(
-						index
-					)
+					String::IntToString(index)
 				);
 
 				GePrint(
 					"  VERTEX COUNT = " +
-					String::IntToString(
-						vertexCount
-					)
+					String::IntToString(vertexCount)
 				);
 
 				return false;
@@ -2289,45 +1975,29 @@ private:
 		Int32 textureCount;
 
 
-		if (!ReadInt32(
-			textureCount
-		))
-		{
-			return ReaderFailed(
-				String("TEXTURE COUNT READ")
-			);
-		}
+		if (!ReadInt32(textureCount))
+			return ReaderFailed(String("TEXTURE COUNT READ"));
 
 
 		if (textureCount < 0)
-		{
-			return ReaderFailed(
-				String("NEGATIVE TEXTURE COUNT")
-			);
-		}
+			return ReaderFailed(String("NEGATIVE TEXTURE COUNT"));
 
 
 		try
 		{
 			textures.resize(
-				static_cast<size_t>(
-					textureCount
-					)
+				static_cast<size_t>(textureCount)
 			);
 		}
 		catch (...)
 		{
-			return ReaderFailed(
-				String("TEXTURE VECTOR ALLOC")
-			);
+			return ReaderFailed(String("TEXTURE VECTOR ALLOC"));
 		}
 
 
 		GePrint(
 			"PMX TEXTURE COUNT : " +
-			String::IntToString(
-				textureCount
-			)
+			String::IntToString(textureCount)
 		);
 
 
@@ -2349,9 +2019,7 @@ private:
 
 				GePrint(
 					"  TEXTURE INDEX = " +
-					String::IntToString(
-						i
-					)
+					String::IntToString(i)
 				);
 
 				GePrint(
@@ -2405,45 +2073,29 @@ private:
 		Int32 materialCount;
 
 
-		if (!ReadInt32(
-			materialCount
-		))
-		{
-			return ReaderFailed(
-				String("MATERIAL COUNT READ")
-			);
-		}
+		if (!ReadInt32(materialCount))
+			return ReaderFailed(String("MATERIAL COUNT READ"));
 
 
 		if (materialCount < 0)
-		{
-			return ReaderFailed(
-				String("NEGATIVE MATERIAL COUNT")
-			);
-		}
+			return ReaderFailed(String("NEGATIVE MATERIAL COUNT"));
 
 
 		try
 		{
 			materials.resize(
-				static_cast<size_t>(
-					materialCount
-					)
+				static_cast<size_t>(materialCount)
 			);
 		}
 		catch (...)
 		{
-			return ReaderFailed(
-				String("MATERIAL VECTOR ALLOC")
-			);
+			return ReaderFailed(String("MATERIAL VECTOR ALLOC"));
 		}
 
 
 		GePrint(
 			"PMX MATERIAL COUNT : " +
-			String::IntToString(
-				materialCount
-			)
+			String::IntToString(materialCount)
 		);
 
 
@@ -2466,247 +2118,53 @@ private:
 				polygonStart;
 
 
-			// ------------------------------------------------
-			// Name
-			// ------------------------------------------------
-
-			if (!ReadPMXString(
-				&material.name
-			))
+			if (!ReadPMXString(&material.name))
 			{
-				GePrint(
-					"PMX MATERIAL READ FAILED"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
-				GePrint(
-					"  FIELD = NAME"
-				);
-
-				GePrint(
-					"  OFFSET = " +
-					GetOffsetString()
-				);
-
+				GePrint("PMX MATERIAL READ FAILED");
+				GePrint("  MATERIAL = " + String::IntToString(i));
+				GePrint("  FIELD = NAME");
+				GePrint("  OFFSET = " + GetOffsetString());
 				return false;
 			}
 
 
-			// ------------------------------------------------
-			// Universal Name
-			// ------------------------------------------------
-
-			if (!ReadPMXString(
-				&material.nameUniversal
-			))
+			if (!ReadPMXString(&material.nameUniversal))
 			{
-				GePrint(
-					"PMX MATERIAL READ FAILED"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
-				GePrint(
-					"  FIELD = UNIVERSAL NAME"
-				);
-
-				GePrint(
-					"  OFFSET = " +
-					GetOffsetString()
-				);
-
+				GePrint("PMX MATERIAL READ FAILED");
+				GePrint("  MATERIAL = " + String::IntToString(i));
+				GePrint("  FIELD = UNIVERSAL NAME");
+				GePrint("  OFFSET = " + GetOffsetString());
 				return false;
 			}
 
 
-			// ------------------------------------------------
-			// Diffuse
-			// ------------------------------------------------
-
-			if (!ReadVector3(
-				material.diffuse
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : DIFFUSE"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
-				GePrint(
-					"  OFFSET = " +
-					GetOffsetString()
-				);
-
+			if (!ReadVector3(material.diffuse))
 				return false;
-			}
 
-
-			if (!ReadFloat32(
-				material.diffuseAlpha
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : DIFFUSE ALPHA"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadFloat32(material.diffuseAlpha))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Specular
-			// ------------------------------------------------
-
-			if (!ReadVector3(
-				material.specular
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : SPECULAR"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadVector3(material.specular))
 				return false;
-			}
 
-
-			if (!ReadFloat32(
-				material.specularPower
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : SPECULAR POWER"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadFloat32(material.specularPower))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Ambient
-			// ------------------------------------------------
-
-			if (!ReadVector3(
-				material.ambient
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : AMBIENT"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadVector3(material.ambient))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Draw Flags
-			// ------------------------------------------------
-
-			if (!ReadUChar(
-				material.drawFlags
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : DRAW FLAGS"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadUChar(material.drawFlags))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Edge Color
-			// ------------------------------------------------
-
-			if (!ReadVector3(
-				material.edgeColor
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : EDGE COLOR"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadVector3(material.edgeColor))
 				return false;
-			}
 
-
-			if (!ReadFloat32(
-				material.edgeAlpha
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : EDGE ALPHA"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadFloat32(material.edgeAlpha))
 				return false;
-			}
 
-
-			if (!ReadFloat32(
-				material.edgeSize
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : EDGE SIZE"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadFloat32(material.edgeSize))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Texture Index
-			// ------------------------------------------------
 
 			if (!ReadIndex(
 				_textureIndexSize,
@@ -2726,10 +2184,6 @@ private:
 			}
 
 
-			// ------------------------------------------------
-			// Sphere Texture Index
-			// ------------------------------------------------
-
 			if (!ReadIndex(
 				_textureIndexSize,
 				material.sphereTextureIndex
@@ -2748,51 +2202,12 @@ private:
 			}
 
 
-			// ------------------------------------------------
-			// Sphere Mode
-			// ------------------------------------------------
-
-			if (!ReadUChar(
-				material.sphereMode
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : SPHERE MODE"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadUChar(material.sphereMode))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Toon Flag
-			// ------------------------------------------------
-
-			if (!ReadUChar(
-				material.toonFlag
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : TOON FLAG"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadUChar(material.toonFlag))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Toon Texture
-			// ------------------------------------------------
 
 			if (material.toonFlag == 0)
 			{
@@ -2801,15 +2216,6 @@ private:
 					material.toonTextureIndex
 				))
 				{
-					GePrint(
-						"PMX MATERIAL READ FAILED : TOON TEXTURE INDEX"
-					);
-
-					GePrint(
-						"  MATERIAL = " +
-						String::IntToString(i)
-					);
-
 					return false;
 				}
 			}
@@ -2818,96 +2224,35 @@ private:
 				UChar toonIndex;
 
 
-				if (!ReadUChar(
-					toonIndex
-				))
-				{
-					GePrint(
-						"PMX MATERIAL READ FAILED : TOON SHARED INDEX"
-					);
-
-					GePrint(
-						"  MATERIAL = " +
-						String::IntToString(i)
-					);
-
+				if (!ReadUChar(toonIndex))
 					return false;
-				}
 
 
 				material.toonTextureIndex =
-					static_cast<Int32>(
-						toonIndex
-						);
+					static_cast<Int32>(toonIndex);
 			}
 
 
-			// ------------------------------------------------
-			// Memo
-			// ------------------------------------------------
-
-			if (!ReadPMXString(
-				&material.memo
-			))
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : MEMO"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
+			if (!ReadPMXString(&material.memo))
 				return false;
-			}
 
-
-			// ------------------------------------------------
-			// Face Vertex Count
-			// ------------------------------------------------
 
 			if (!ReadInt32(
 				material.faceVertexCount
 			))
 			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : FACE VERTEX COUNT"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
 				return false;
 			}
 
 
 			if (material.faceVertexCount < 0)
-			{
-				GePrint(
-					"PMX MATERIAL READ FAILED : NEGATIVE FACE VERTEX COUNT"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
-				);
-
 				return false;
-			}
 
 
 			if ((material.faceVertexCount % 3) != 0)
 			{
 				GePrint(
 					"PMX MATERIAL WARNING : FACE VERTEX COUNT NOT DIVISIBLE BY 3"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(i)
 				);
 			}
 
@@ -2919,10 +2264,6 @@ private:
 			polygonStart +=
 				material.polygonCount;
 
-
-			// ------------------------------------------------
-			// Material Diagnostic
-			// ------------------------------------------------
 
 			GePrint(
 				"PMX MATERIAL[" +
@@ -3133,10 +2474,6 @@ private:
 		}
 
 
-		/*
-		Material polygonStartの範囲も検証する。
-		*/
-
 		Int32 expectedStart = 0;
 
 
@@ -3151,27 +2488,6 @@ private:
 			{
 				GePrint(
 					"PMX MATERIAL VALIDATION : POLYGON START MISMATCH"
-				);
-
-				GePrint(
-					"  MATERIAL = " +
-					String::IntToString(
-						static_cast<Int32>(i)
-					)
-				);
-
-				GePrint(
-					"  STORED START = " +
-					String::IntToString(
-						materials[i].polygonStart
-					)
-				);
-
-				GePrint(
-					"  EXPECTED START = " +
-					String::IntToString(
-						expectedStart
-					)
 				);
 
 				return false;
@@ -3224,9 +2540,7 @@ private:
 
 		if (!handle)
 		{
-			NormalTag::Free(
-				normalTag
-			);
+			NormalTag::Free(normalTag);
 
 			return false;
 		}
@@ -3246,9 +2560,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base
-								)
+							static_cast<size_t>(base)
 						]
 						)
 				].normal;
@@ -3258,9 +2570,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base + 1
-								)
+							static_cast<size_t>(base + 1)
 						]
 						)
 				].normal;
@@ -3270,9 +2580,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base + 2
-								)
+							static_cast<size_t>(base + 2)
 						]
 						)
 				].normal;
@@ -3302,29 +2610,6 @@ private:
 
 		GePrint(
 			"PMX NORMAL TAG : CREATED"
-		);
-
-
-		GePrint(
-			"PMX NORMAL : APPLIED"
-		);
-
-
-		GePrint(
-			"PMX NORMAL POLYGON COUNT : " +
-			String::IntToString(
-				polygonCount
-			)
-		);
-
-
-		GePrint(
-			"PMX NORMAL VERTEX COUNT : " +
-			String::IntToString(
-				static_cast<Int32>(
-					vertices.size()
-					)
-			)
 		);
 
 
@@ -3372,9 +2657,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base
-								)
+							static_cast<size_t>(base)
 						]
 						)
 				].uv;
@@ -3384,9 +2667,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base + 1
-								)
+							static_cast<size_t>(base + 1)
 						]
 						)
 				].uv;
@@ -3396,9 +2677,7 @@ private:
 				vertices[
 					static_cast<size_t>(
 						indices[
-							static_cast<size_t>(
-								base + 2
-								)
+							static_cast<size_t>(base + 2)
 						]
 						)
 				].uv;
@@ -3427,19 +2706,6 @@ private:
 
 		GePrint(
 			"PMX UVW : CREATED"
-		);
-
-
-		GePrint(
-			"PMX UV : APPLIED"
-		);
-
-
-		GePrint(
-			"PMX UVW POLYGON COUNT : " +
-			String::IntToString(
-				polygonCount
-			)
 		);
 
 
@@ -3480,11 +2746,6 @@ private:
 		);
 
 
-		GePrint(
-			"PMX SMOOTH : ENABLED"
-		);
-
-
 		return true;
 	}
 
@@ -3505,13 +2766,7 @@ private:
 
 
 		if (!material)
-		{
-			GePrint(
-				"PMX C4D MATERIAL : ALLOC FAILED"
-			);
-
 			return nullptr;
-		}
 
 
 		String materialName =
@@ -3521,12 +2776,8 @@ private:
 		if (materialName == String())
 		{
 			materialName =
-				String(
-					"PMX Material "
-				) +
-				String::IntToString(
-					materialIndex
-				);
+				String("PMX Material ") +
+				String::IntToString(materialIndex);
 		}
 
 
@@ -3536,12 +2787,8 @@ private:
 
 
 		material->SetParameter(
-			DescID(
-				MATERIAL_COLOR_COLOR
-			),
-			GeData(
-				pmxMaterial.diffuse
-			),
+			DescID(MATERIAL_COLOR_COLOR),
+			GeData(pmxMaterial.diffuse),
 			DESCFLAGS_SET_0
 		);
 
@@ -3553,9 +2800,7 @@ private:
 
 		GePrint(
 			"  MATERIAL INDEX = " +
-			String::IntToString(
-				materialIndex
-			)
+			String::IntToString(materialIndex)
 		);
 
 
@@ -3563,30 +2808,6 @@ private:
 			"  MATERIAL NAME = " +
 			materialName
 		);
-
-
-		GePrint(
-			"  DIFFUSE COLOR APPLIED"
-		);
-
-
-		if (pmxMaterial.diffuseAlpha < 0.999f)
-		{
-			GePrint(
-				"  PMX DIFFUSE ALPHA = " +
-				String::FloatToString(
-					static_cast<Float>(
-						pmxMaterial.diffuseAlpha
-						)
-				)
-			);
-		}
-		else
-		{
-			GePrint(
-				"  PMX DIFFUSE ALPHA = 1.0"
-			);
-		}
 
 
 		return material;
@@ -3658,12 +2879,10 @@ private:
 				"PMX BITMAP : FILE NOT FOUND"
 			);
 
-
 			GePrint(
 				"  ABSOLUTE PATH = " +
 				absoluteTextureFile.GetString()
 			);
-
 
 			return nullptr;
 		}
@@ -3676,130 +2895,64 @@ private:
 
 
 		if (!bitmapShader)
-		{
-			GePrint(
-				"PMX BITMAP : SHADER ALLOC FAILED"
-			);
-
 			return nullptr;
-		}
 
 
 		if (!bitmapShader->SetParameter(
-			DescID(
-				BITMAPSHADER_FILENAME
-			),
-			GeData(
-				relativeTextureFile
-			),
+			DescID(BITMAPSHADER_FILENAME),
+			GeData(relativeTextureFile),
 			DESCFLAGS_SET_0
 		))
 		{
-			BaseShader::Free(
-				bitmapShader
-			);
-
-
-			GePrint(
-				"PMX BITMAP : RELATIVE FILENAME SET FAILED"
-			);
-
+			BaseShader::Free(bitmapShader);
 
 			return nullptr;
 		}
 
 
 		if (!material->SetParameter(
-			DescID(
-				MATERIAL_COLOR_SHADER
-			),
-			GeData(
-				bitmapShader
-			),
+			DescID(MATERIAL_COLOR_SHADER),
+			GeData(bitmapShader),
 			DESCFLAGS_SET_0
 		))
 		{
-			BaseShader::Free(
-				bitmapShader
-			);
-
-
-			GePrint(
-				"PMX BITMAP : COLOR SHADER LINK FAILED"
-			);
-
+			BaseShader::Free(bitmapShader);
 
 			return nullptr;
 		}
 
 
 		if (!material->SetParameter(
-			DescID(
-				MATERIAL_USE_ALPHA
-			),
-			GeData(
-				true
-			),
+			DescID(MATERIAL_USE_ALPHA),
+			GeData(true),
 			DESCFLAGS_SET_0
 		))
 		{
-			BaseShader::Free(
-				bitmapShader
-			);
-
-
-			GePrint(
-				"PMX BITMAP : ALPHA CHANNEL ENABLE FAILED"
-			);
-
+			BaseShader::Free(bitmapShader);
 
 			return nullptr;
 		}
 
 
 		if (!material->SetParameter(
-			DescID(
-				MATERIAL_ALPHA_SHADER
-			),
-			GeData(
-				bitmapShader
-			),
+			DescID(MATERIAL_ALPHA_SHADER),
+			GeData(bitmapShader),
 			DESCFLAGS_SET_0
 		))
 		{
-			BaseShader::Free(
-				bitmapShader
-			);
-
-
-			GePrint(
-				"PMX BITMAP : ALPHA SHADER LINK FAILED"
-			);
-
+			BaseShader::Free(bitmapShader);
 
 			return nullptr;
 		}
 
 
 		if (!material->SetParameter(
-			DescID(
-				MATERIAL_ALPHA_IMAGEALPHA
-			),
-			GeData(
-				true
-			),
+			DescID(MATERIAL_ALPHA_IMAGEALPHA),
+			GeData(true),
 			DESCFLAGS_SET_0
 		))
 		{
-			BaseShader::Free(
-				bitmapShader
-			);
-
-
-			GePrint(
-				"PMX BITMAP : IMAGE ALPHA ENABLE FAILED"
-			);
-
+			BaseShader::Free(bitmapShader);
 
 			return nullptr;
 		}
@@ -3819,12 +2972,8 @@ private:
 
 
 		material->SetParameter(
-			DescID(
-				MATERIAL_ALPHA_COLOR
-			),
-			GeData(
-				alphaColor
-			),
+			DescID(MATERIAL_ALPHA_COLOR),
+			GeData(alphaColor),
 			DESCFLAGS_SET_0
 		);
 
@@ -3851,29 +3000,6 @@ private:
 		);
 
 
-		GePrint(
-			"  COLOR SHADER LINK = OK"
-		);
-
-
-		GePrint(
-			"  ALPHA SHADER LINK = OK"
-		);
-
-
-		GePrint(
-			"  IMAGE ALPHA = ENABLED"
-		);
-
-
-		GePrint(
-			"  PMX DIFFUSE ALPHA = " +
-			String::FloatToString(
-				alpha
-			)
-		);
-
-
 		return bitmapShader;
 	}
 
@@ -3886,6 +3012,7 @@ private:
 		PolygonObject* object,
 		const PMXMaterial& material,
 		Int32 materialIndex,
+		Int32 polygonOffset,
 		String& selectionName
 	)
 	{
@@ -3910,12 +3037,8 @@ private:
 		if (selectionName == String())
 		{
 			selectionName =
-				String(
-					"PMX Material "
-				) +
-				String::IntToString(
-					materialIndex
-				);
+				String("PMX Material ") +
+				String::IntToString(materialIndex);
 		}
 
 
@@ -3930,9 +3053,7 @@ private:
 
 		if (!selection)
 		{
-			SelectionTag::Free(
-				selectionTag
-			);
+			SelectionTag::Free(selectionTag);
 
 			return false;
 		}
@@ -3945,48 +3066,13 @@ private:
 			)
 		{
 			selection->Select(
-				material.polygonStart + i
+				polygonOffset + i
 			);
 		}
 
 
 		object->InsertTag(
 			selectionTag
-		);
-
-
-		GePrint(
-			"PMX MATERIAL SELECTION : CREATED"
-		);
-
-
-		GePrint(
-			"  MATERIAL INDEX = " +
-			String::IntToString(
-				materialIndex
-			)
-		);
-
-
-		GePrint(
-			"  SELECTION NAME = " +
-			selectionName
-		);
-
-
-		GePrint(
-			"  POLYGON START = " +
-			String::IntToString(
-				material.polygonStart
-			)
-		);
-
-
-		GePrint(
-			"  POLYGON COUNT = " +
-			String::IntToString(
-				material.polygonCount
-			)
 		);
 
 
@@ -4002,7 +3088,8 @@ private:
 		PolygonObject* object,
 		BaseMaterial* material,
 		const PMXMaterial& pmxMaterial,
-		Int32 materialIndex
+		Int32 materialIndex,
+		Int32 polygonOffset
 	)
 	{
 		if (!object)
@@ -4018,13 +3105,7 @@ private:
 
 
 		if (!textureTag)
-		{
-			GePrint(
-				"PMX MATERIAL TAG : ALLOC FAILED"
-			);
-
 			return false;
-		}
 
 
 		textureTag->SetMaterial(
@@ -4033,12 +3114,8 @@ private:
 
 
 		textureTag->SetParameter(
-			DescID(
-				TEXTURETAG_PROJECTION
-			),
-			GeData(
-				TEXTURETAG_PROJECTION_UVW
-			),
+			DescID(TEXTURETAG_PROJECTION),
+			GeData(TEXTURETAG_PROJECTION_UVW),
 			DESCFLAGS_SET_0
 		);
 
@@ -4050,34 +3127,23 @@ private:
 			object,
 			pmxMaterial,
 			materialIndex,
+			polygonOffset,
 			selectionName
 		))
 		{
-			TextureTag::Free(
-				textureTag
-			);
+			TextureTag::Free(textureTag);
 
 			return false;
 		}
 
 
 		if (!textureTag->SetParameter(
-			DescID(
-				TEXTURETAG_RESTRICTION
-			),
-			GeData(
-				selectionName
-			),
+			DescID(TEXTURETAG_RESTRICTION),
+			GeData(selectionName),
 			DESCFLAGS_SET_0
 		))
 		{
-			TextureTag::Free(
-				textureTag
-			);
-
-			GePrint(
-				"PMX MATERIAL TAG : RESTRICTION SET FAILED"
-			);
+			TextureTag::Free(textureTag);
 
 			return false;
 		}
@@ -4088,112 +3154,603 @@ private:
 		);
 
 
-		GePrint(
-			"PMX MATERIAL TAG : CREATED"
-		);
+		return true;
+	}
 
 
-		GePrint(
-			"  MATERIAL INDEX = " +
-			String::IntToString(
+	// ========================================================
+	// Create Combined Object
+	// ========================================================
+
+	PolygonObject* BuildCombinedObject(
+		const std::vector<PMXVertex>& vertices,
+		const std::vector<Int32>& indices,
+		Float scale
+	)
+	{
+		const Int32 pointCount =
+			static_cast<Int32>(
+				vertices.size()
+				);
+
+
+		const Int32 polygonCount =
+			static_cast<Int32>(
+				indices.size() / 3
+				);
+
+
+		PolygonObject* object =
+			PolygonObject::Alloc(
+				pointCount,
+				polygonCount
+			);
+
+
+		if (!object)
+			return nullptr;
+
+
+		Vector* points =
+			object->GetPointW();
+
+
+		if (!points)
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		for (
+			Int32 i = 0;
+			i < pointCount;
+			++i
+			)
+		{
+			points[i] =
+				vertices[
+					static_cast<size_t>(i)
+				].position *
+				scale;
+		}
+
+
+		CPolygon* polygons =
+			object->GetPolygonW();
+
+
+		if (!polygons)
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		for (
+			Int32 i = 0;
+			i < polygonCount;
+			++i
+			)
+		{
+			const Int32 base =
+				i * 3;
+
+
+			polygons[i] =
+				CPolygon(
+					indices[
+						static_cast<size_t>(base)
+					],
+					indices[
+						static_cast<size_t>(base + 1)
+					],
+							indices[
+								static_cast<size_t>(base + 2)
+							],
+							indices[
+								static_cast<size_t>(base + 2)
+							]
+									);
+		}
+
+
+		if (!CreateNormalTag(
+			object,
+			vertices,
+			indices
+		))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		if (!CreateUVW(
+			object,
+			vertices,
+			indices
+		))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		if (!CreateSmoothTag(object))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		return object;
+	}
+
+
+	// ========================================================
+	// Create Material Object
+	// ========================================================
+
+	PolygonObject* BuildMaterialObject(
+		const std::vector<PMXVertex>& vertices,
+		const std::vector<Int32>& indices,
+		const PMXMaterial& material,
+		Float scale
+	)
+	{
+		const Int32 polygonCount =
+			material.polygonCount;
+
+
+		if (polygonCount <= 0)
+			return nullptr;
+
+
+		const Int32 globalPolygonStart =
+			material.polygonStart;
+
+
+		const Int32 globalIndexStart =
+			globalPolygonStart * 3;
+
+
+		std::vector<Int32> localIndices;
+
+
+		try
+		{
+			localIndices.resize(
+				static_cast<size_t>(
+					polygonCount * 3
+					)
+			);
+		}
+		catch (...)
+		{
+			return nullptr;
+		}
+
+
+		/*
+		分離Objectでは、
+		元PMXのPolygon順をそのまま維持する。
+
+		この段階ではPointも共有したままではなく、
+		使用されたPointだけをローカルPointへ再構成する。
+		*/
+
+
+		std::vector<Int32> globalToLocal;
+
+
+		try
+		{
+			globalToLocal.resize(
+				vertices.size()
+			);
+		}
+		catch (...)
+		{
+			return nullptr;
+		}
+
+
+		for (
+			size_t i = 0;
+			i < globalToLocal.size();
+			++i
+			)
+		{
+			globalToLocal[i] = -1;
+		}
+
+
+		std::vector<Int32> localToGlobal;
+
+
+		for (
+			Int32 i = 0;
+			i < polygonCount * 3;
+			++i
+			)
+		{
+			const Int32 globalIndex =
+				indices[
+					static_cast<size_t>(
+						globalIndexStart + i
+						)
+				];
+
+
+			if (globalIndex < 0 ||
+				globalIndex >=
+				static_cast<Int32>(
+					vertices.size()
+					))
+			{
+				return nullptr;
+			}
+
+
+			Int32 localIndex =
+				globalToLocal[
+					static_cast<size_t>(
+						globalIndex
+						)
+				];
+
+
+			if (localIndex < 0)
+			{
+				localIndex =
+					static_cast<Int32>(
+						localToGlobal.size()
+						);
+
+
+				globalToLocal[
+					static_cast<size_t>(
+						globalIndex
+						)
+				] =
+					localIndex;
+
+
+					localToGlobal.push_back(
+						globalIndex
+					);
+			}
+
+
+			localIndices[
+				static_cast<size_t>(i)
+			] =
+				localIndex;
+		}
+
+
+		const Int32 pointCount =
+			static_cast<Int32>(
+				localToGlobal.size()
+				);
+
+
+		PolygonObject* object =
+			PolygonObject::Alloc(
+				pointCount,
+				polygonCount
+			);
+
+
+		if (!object)
+			return nullptr;
+
+
+		Vector* points =
+			object->GetPointW();
+
+
+		if (!points)
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		for (
+			Int32 i = 0;
+			i < pointCount;
+			++i
+			)
+		{
+			const Int32 globalIndex =
+				localToGlobal[
+					static_cast<size_t>(i)
+				];
+
+
+			points[i] =
+				vertices[
+					static_cast<size_t>(
+						globalIndex
+						)
+				].position *
+				scale;
+		}
+
+
+		CPolygon* polygons =
+			object->GetPolygonW();
+
+
+		if (!polygons)
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		for (
+			Int32 i = 0;
+			i < polygonCount;
+			++i
+			)
+		{
+			const Int32 base =
+				i * 3;
+
+
+			polygons[i] =
+				CPolygon(
+					localIndices[
+						static_cast<size_t>(base)
+					],
+					localIndices[
+						static_cast<size_t>(base + 1)
+					],
+							localIndices[
+								static_cast<size_t>(base + 2)
+							],
+							localIndices[
+								static_cast<size_t>(base + 2)
+							]
+									);
+		}
+
+
+		/*
+		Normal / UVは元PMXのglobal pointから
+		取得する。
+
+		PMX Normal / UVはVertex単位なので、
+		PolygonObject側のローカルPoint順に合わせて
+		各Polygonの値を再構成する。
+		*/
+
+		std::vector<Int32> normalUVIndices;
+
+
+		try
+		{
+			normalUVIndices.resize(
+				localIndices.size()
+			);
+		}
+		catch (...)
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		for (
+			size_t i = 0;
+			i < localIndices.size();
+			++i
+			)
+		{
+			const Int32 localIndex =
+				localIndices[i];
+
+
+			normalUVIndices[i] =
+				localToGlobal[
+					static_cast<size_t>(
+						localIndex
+						)
+				];
+		}
+
+
+		if (!CreateNormalTag(
+			object,
+			vertices,
+			normalUVIndices
+		))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		if (!CreateUVW(
+			object,
+			vertices,
+			normalUVIndices
+		))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		if (!CreateSmoothTag(object))
+		{
+			PolygonObject::Free(object);
+
+			return nullptr;
+		}
+
+
+		return object;
+	}
+
+
+	// ========================================================
+	// Setup Material
+	// ========================================================
+
+	Bool SetupMaterial(
+		PolygonObject* object,
+		BaseDocument* doc,
+		const Filename& filename,
+		const std::vector<PMXTexture>& textures,
+		const PMXMaterial& pmxMaterial,
+		Int32 materialIndex,
+		Int32 polygonOffset
+	)
+	{
+		if (!object)
+			return false;
+
+
+		BaseMaterial* material =
+			CreateC4DMaterial(
+				pmxMaterial,
 				materialIndex
-			)
+			);
+
+
+		if (!material)
+			return false;
+
+
+		if (pmxMaterial.textureIndex >= 0 &&
+			pmxMaterial.textureIndex <
+			static_cast<Int32>(
+				textures.size()
+				))
+		{
+			const String& texturePath =
+				textures[
+					static_cast<size_t>(
+						pmxMaterial.textureIndex
+						)
+				].path;
+
+
+			if (texturePath != String())
+			{
+				Filename absoluteTextureFile =
+					BuildTextureFilename(
+						filename,
+						texturePath
+					);
+
+
+				Filename relativeTextureFile =
+					BuildRelativeTextureFilename(
+						texturePath
+					);
+
+
+				if (!CreateBitmapShader(
+					material,
+					absoluteTextureFile,
+					relativeTextureFile,
+					pmxMaterial
+				))
+				{
+					GePrint(
+						"PMX BITMAP : NOT LINKED"
+					);
+				}
+			}
+		}
+
+
+		doc->InsertMaterial(
+			material
 		);
 
 
-		GePrint(
-			"  MATERIAL NAME = " +
-			selectionName
-		);
-
-
-		GePrint(
-			"  POLYGON START = " +
-			String::IntToString(
-				pmxMaterial.polygonStart
-			)
-		);
-
-
-		GePrint(
-			"  POLYGON COUNT = " +
-			String::IntToString(
-				pmxMaterial.polygonCount
-			)
-		);
-
-
-		GePrint(
-			"  RESTRICTION = " +
-			selectionName
-		);
+		if (!CreateMaterialTag(
+			object,
+			material,
+			pmxMaterial,
+			materialIndex,
+			polygonOffset
+		))
+		{
+			return false;
+		}
 
 
 		return true;
 	}
 
 
-public:
-
 	// ========================================================
 	// Load
 	// ========================================================
 
+public:
+
 	Bool Load(
 		const Filename& filename,
-		BaseDocument* doc
+		BaseDocument* doc,
+		const PMXImportSettings& settings
 	)
 	{
 		if (!doc)
 			return false;
 
 
-		// ----------------------------------------------------
-		// Open
-		// ----------------------------------------------------
+		GePrint(
+			"PMX IMPORT MODE : " +
+			String::IntToString(
+				static_cast<Int32>(
+					settings.mode
+					)
+			)
+		);
 
-		if (!Open(
-			filename
-		))
-		{
+
+		GePrint(
+			"PMX IMPORT SCALE : " +
+			String::FloatToString(
+				settings.scale
+			)
+		);
+
+
+		if (!Open(filename))
 			return false;
-		}
-
-
-		// ----------------------------------------------------
-		// Header
-		// ----------------------------------------------------
 
 		if (!ReadHeader())
 			return false;
-
-
-		// ----------------------------------------------------
-		// Model Info
-		// ----------------------------------------------------
 
 		if (!ReadModelInfo())
 			return false;
 
 
-		// ----------------------------------------------------
-		// Vertices
-		// ----------------------------------------------------
-
 		std::vector<PMXVertex> vertices;
 
 
-		if (!ReadVertices(
-			vertices
-		))
-		{
+		if (!ReadVertices(vertices))
 			return false;
-		}
 
-
-		// ----------------------------------------------------
-		// Faces
-		// ----------------------------------------------------
 
 		std::vector<Int32> indices;
 
@@ -4207,10 +3764,6 @@ public:
 		}
 
 
-		// ----------------------------------------------------
-		// Face Validation
-		// ----------------------------------------------------
-
 		if (!ValidateFaces(
 			vertices,
 			indices
@@ -4220,39 +3773,19 @@ public:
 		}
 
 
-		// ----------------------------------------------------
-		// Textures
-		// ----------------------------------------------------
-
 		std::vector<PMXTexture> textures;
 
 
-		if (!ReadTextures(
-			textures
-		))
-		{
+		if (!ReadTextures(textures))
 			return false;
-		}
 
-
-		// ----------------------------------------------------
-		// Materials
-		// ----------------------------------------------------
 
 		std::vector<PMXMaterial> materials;
 
 
-		if (!ReadMaterials(
-			materials
-		))
-		{
+		if (!ReadMaterials(materials))
 			return false;
-		}
 
-
-		// ----------------------------------------------------
-		// Polygon Count
-		// ----------------------------------------------------
 
 		const Int32 geometryPolygonCount =
 			static_cast<Int32>(
@@ -4269,447 +3802,243 @@ public:
 		}
 
 
-		GePrint(
-			"PMX MATERIAL POLYGON RANGE : OK"
-		);
+		// ====================================================
+		// Combined
+		// ====================================================
 
-
-		// ----------------------------------------------------
-		// Polygon Object
-		// ----------------------------------------------------
-
-		const Int32 pointCount =
-			static_cast<Int32>(
-				vertices.size()
+		if (settings.mode ==
+			PMX_IMPORT_COMBINED)
+		{
+			PolygonObject* object =
+				BuildCombinedObject(
+					vertices,
+					indices,
+					settings.scale
 				);
 
 
-		const Int32 polygonCount =
-			geometryPolygonCount;
-
-
-		PolygonObject* object =
-			PolygonObject::Alloc(
-				pointCount,
-				polygonCount
-			);
-
-
-		if (!object)
-			return false;
-
-
-		// ----------------------------------------------------
-		// Points
-		// ----------------------------------------------------
-
-		Vector* points =
-			object->GetPointW();
-
-
-		if (!points)
-		{
-			PolygonObject::Free(
-				object
-			);
-
-			return false;
-		}
-
-
-		for (
-			Int32 i = 0;
-			i < pointCount;
-			++i
-			)
-		{
-			points[i] =
-				vertices[
-					static_cast<size_t>(i)
-				].position;
-		}
-
-
-		// ----------------------------------------------------
-		// Polygons
-		// ----------------------------------------------------
-
-		CPolygon* polygons =
-			object->GetPolygonW();
-
-
-		if (!polygons)
-		{
-			PolygonObject::Free(
-				object
-			);
-
-			return false;
-		}
-
-
-		for (
-			Int32 i = 0;
-			i < polygonCount;
-			++i
-			)
-		{
-			const Int32 base =
-				i * 3;
-
-
-			const Int32 a =
-				indices[
-					static_cast<size_t>(base)
-				];
-
-
-			const Int32 b =
-				indices[
-					static_cast<size_t>(base + 1)
-				];
-
-
-			const Int32 c =
-				indices[
-					static_cast<size_t>(base + 2)
-				];
-
-
-			polygons[i] =
-				CPolygon(
-					a,
-					b,
-					c,
-					c
-				);
-		}
-
-
-		// ----------------------------------------------------
-		// Normal
-		// ----------------------------------------------------
-
-		if (!CreateNormalTag(
-			object,
-			vertices,
-			indices
-		))
-		{
-			PolygonObject::Free(
-				object
-			);
-
-			return false;
-		}
-
-
-		// ----------------------------------------------------
-		// UVW
-		// ----------------------------------------------------
-
-		if (!CreateUVW(
-			object,
-			vertices,
-			indices
-		))
-		{
-			PolygonObject::Free(
-				object
-			);
-
-			return false;
-		}
-
-
-		// ----------------------------------------------------
-		// Phong
-		// ----------------------------------------------------
-
-		if (!CreateSmoothTag(
-			object
-		))
-		{
-			PolygonObject::Free(
-				object
-			);
-
-			return false;
-		}
-
-
-		// ----------------------------------------------------
-		// C4D Materials
-		// ----------------------------------------------------
-
-		for (
-			Int32 materialIndex = 0;
-			materialIndex <
-			static_cast<Int32>(
-				materials.size()
-				);
-			++materialIndex
-			)
-		{
-			const PMXMaterial& pmxMaterial =
-				materials[
-					static_cast<size_t>(
-						materialIndex
-						)
-				];
-
-
-			// ------------------------------------------------
-			// Material
-			// ------------------------------------------------
-
-			BaseMaterial* material =
-				CreateC4DMaterial(
-					pmxMaterial,
-					materialIndex
-				);
-
-
-			if (!material)
-			{
-				PolygonObject::Free(
-					object
-				);
-
+			if (!object)
 				return false;
-			}
 
 
-			// ------------------------------------------------
-			// Texture
-			// ------------------------------------------------
-
-			if (pmxMaterial.textureIndex >= 0 &&
-				pmxMaterial.textureIndex <
-				static_cast<Int32>(
-					textures.size()
-					))
-			{
-				const String& texturePath =
-					textures[
-						static_cast<size_t>(
-							pmxMaterial.textureIndex
-							)
-					].path;
-
-
-				if (texturePath != String())
-				{
-					Filename absoluteTextureFile =
-						BuildTextureFilename(
-							filename,
-							texturePath
-						);
-
-
-					Filename relativeTextureFile =
-						BuildRelativeTextureFilename(
-							texturePath
-						);
-
-
-					GePrint(
-						"PMX MATERIAL TEXTURE : RESOLVED"
-					);
-
-
-					GePrint(
-						"  TEXTURE INDEX = " +
-						String::IntToString(
-							pmxMaterial.textureIndex
-						)
-					);
-
-
-					GePrint(
-						"  PMX TEXTURE PATH = " +
-						texturePath
-					);
-
-
-					GePrint(
-						"  CHECK FILE = " +
-						absoluteTextureFile.GetString()
-					);
-
-
-					GePrint(
-						"  STORED PATH = " +
-						relativeTextureFile.GetString()
-					);
-
-
-					if (!CreateBitmapShader(
-						material,
-						absoluteTextureFile,
-						relativeTextureFile,
-						pmxMaterial
-					))
-					{
-						GePrint(
-							"PMX BITMAP : NOT LINKED"
-						);
-					}
-				}
-				else
-				{
-					GePrint(
-						"PMX MATERIAL TEXTURE : EMPTY PATH"
-					);
-				}
-			}
-			else
-			{
-				GePrint(
-					"PMX MATERIAL TEXTURE : NONE"
-				);
-			}
-
-
-			// ------------------------------------------------
-			// Insert Material
-			// ------------------------------------------------
-
-			doc->InsertMaterial(
-				material
-			);
-
-
-			// ------------------------------------------------
-			// Material Tag
-			// ------------------------------------------------
-
-			if (!CreateMaterialTag(
-				object,
-				material,
-				pmxMaterial,
-				materialIndex
-			))
-			{
-				return false;
-			}
-		}
-
-
-		// ----------------------------------------------------
-		// Object Name
-		// ----------------------------------------------------
-
-		object->SetName(
-			String(
-				"PMX Model"
-			)
-		);
-
-
-		// ----------------------------------------------------
-		// Insert Object
-		// ----------------------------------------------------
-
-		doc->InsertObject(
-			object,
-			nullptr,
-			nullptr
-		);
-
-
-		// ----------------------------------------------------
-		// Active Object
-		// ----------------------------------------------------
-
-		doc->SetActiveObject(
-			object
-		);
-
-
-		object->Message(
-			MSG_UPDATE
-		);
-
-
-		// ----------------------------------------------------
-		// Result
-		// ----------------------------------------------------
-
-		GePrint(
-			"PMX OBJECT : CREATED"
-		);
-
-
-		GePrint(
-			"PMX POINT COUNT : " +
-			String::IntToString(
-				pointCount
-			)
-		);
-
-
-		GePrint(
-			"PMX POLYGON COUNT : " +
-			String::IntToString(
-				polygonCount
-			)
-		);
-
-
-		GePrint(
-			"PMX TEXTURE COUNT : " +
-			String::IntToString(
-				static_cast<Int32>(
-					textures.size()
-					)
-			)
-		);
-
-
-		GePrint(
-			"PMX MATERIAL COUNT : " +
-			String::IntToString(
+			for (
+				Int32 materialIndex = 0;
+				materialIndex <
 				static_cast<Int32>(
 					materials.size()
+					);
+				++materialIndex
+				)
+			{
+				const PMXMaterial& pmxMaterial =
+					materials[
+						static_cast<size_t>(
+							materialIndex
+							)
+					];
+
+
+				if (!SetupMaterial(
+					object,
+					doc,
+					filename,
+					textures,
+					pmxMaterial,
+					materialIndex,
+					pmxMaterial.polygonStart
+				))
+				{
+					PolygonObject::Free(object);
+
+					return false;
+				}
+			}
+
+
+			object->SetName(
+				String("PMX Model")
+			);
+
+
+			doc->InsertObject(
+				object,
+				nullptr,
+				nullptr
+			);
+
+
+			doc->SetActiveObject(
+				object
+			);
+
+
+			object->Message(
+				MSG_UPDATE
+			);
+
+
+			GePrint(
+				"PMX OBJECT MODE : COMBINED"
+			);
+
+
+			GePrint(
+				"PMX POINT COUNT : " +
+				String::IntToString(
+					static_cast<Int32>(
+						vertices.size()
+						)
+				)
+			);
+
+
+			GePrint(
+				"PMX POLYGON COUNT : " +
+				String::IntToString(
+					geometryPolygonCount
+				)
+			);
+		}
+
+
+		// ====================================================
+		// Material Separated
+		// ====================================================
+
+		else
+		{
+			GePrint(
+				"PMX OBJECT MODE : MATERIAL SEPARATED"
+			);
+
+
+			Bool firstObject = true;
+
+
+			for (
+				Int32 materialIndex = 0;
+				materialIndex <
+				static_cast<Int32>(
+					materials.size()
+					);
+				++materialIndex
+				)
+			{
+				const PMXMaterial& pmxMaterial =
+					materials[
+						static_cast<size_t>(
+							materialIndex
+							)
+					];
+
+
+				if (pmxMaterial.polygonCount <= 0)
+					continue;
+
+
+				PolygonObject* object =
+					BuildMaterialObject(
+						vertices,
+						indices,
+						pmxMaterial,
+						settings.scale
+					);
+
+
+				if (!object)
+				{
+					GePrint(
+						"PMX MATERIAL OBJECT : BUILD FAILED"
+					);
+
+					return false;
+				}
+
+
+				String objectName =
+					pmxMaterial.name;
+
+
+				if (objectName == String())
+				{
+					objectName =
+						String("PMX Material ") +
+						String::IntToString(
+							materialIndex
+						);
+				}
+
+
+				object->SetName(
+					objectName
+				);
+
+
+				if (!SetupMaterial(
+					object,
+					doc,
+					filename,
+					textures,
+					pmxMaterial,
+					materialIndex,
+					0
+				))
+				{
+					PolygonObject::Free(object);
+
+					return false;
+				}
+
+
+				doc->InsertObject(
+					object,
+					nullptr,
+					nullptr
+				);
+
+
+				if (firstObject)
+				{
+					doc->SetActiveObject(
+						object
+					);
+
+					firstObject = false;
+				}
+
+
+				object->Message(
+					MSG_UPDATE
+				);
+
+
+				GePrint(
+					"PMX MATERIAL OBJECT : CREATED"
+				);
+
+
+				GePrint(
+					"  MATERIAL INDEX = " +
+					String::IntToString(
+						materialIndex
 					)
-			)
-		);
+				);
 
 
-		GePrint(
-			"PMX C4D MATERIALS : CREATED"
-		);
+				GePrint(
+					"  NAME = " +
+					objectName
+				);
 
 
-		GePrint(
-			"PMX BITMAP SHADERS : PROCESSED"
-		);
-
-
-		GePrint(
-			"PMX MATERIAL SELECTIONS : CREATED"
-		);
-
-
-		GePrint(
-			"PMX TEXTURE TAG RESTRICTIONS : APPLIED"
-		);
-
-
-		GePrint(
-			"PMX RELATIVE TEXTURE PATHS : APPLIED"
-		);
-
-
-		GePrint(
-			"PMX IMAGE ALPHA : LINKED"
-		);
-
-
-		GePrint(
-			"PMX PHONG / SMOOTH : CREATED"
-		);
+				GePrint(
+					"  POLYGON COUNT = " +
+					String::IntToString(
+						pmxMaterial.polygonCount
+					)
+				);
+			}
+		}
 
 
 		GePrint(
@@ -4723,12 +4052,11 @@ public:
 
 
 		GePrint(
-			"STEP 07 : "
-			"PMX READER INDEX FIX + "
-			"FACE/TEXTURE/MATERIAL OFFSET DIAGNOSTICS + "
-			"GEOMETRY + UV + NORMAL + MATERIAL + "
-			"RELATIVE BITMAP + ALPHA + MATERIAL NAME SELECTION + "
-			"R19 PHONG COMPLETE"
+			"STEP 08 : "
+			"STEP 07 BASE + "
+			"IMPORT MODE + "
+			"MATERIAL SEPARATION + "
+			"IMPORT SCALE"
 		);
 
 
@@ -4802,7 +4130,7 @@ FILEERROR GPTMMDPMXLoader::Load(
 
 
 	GePrint(
-		"PMX SCENE LOADER - STEP 07"
+		"PMX SCENE LOADER - STEP 08"
 	);
 
 
@@ -4822,12 +4150,79 @@ FILEERROR GPTMMDPMXLoader::Load(
 	);
 
 
+	// ========================================================
+	// Import Settings
+	// ========================================================
+
+	PMXImportDialog dialog;
+
+
+	if (!dialog.Open(
+		DLG_TYPE_MODAL,
+		0,
+		-1,
+		-1
+	))
+	{
+		GePrint(
+			"PMX IMPORT DIALOG : OPEN FAILED"
+		);
+
+		if (error)
+		{
+			*error =
+				String(
+					"GPT MMD TOOLS : IMPORT DIALOG FAILED"
+				);
+		}
+
+		return FILEERROR_INVALID;
+	}
+
+
+	if (!dialog.WasAccepted())
+	{
+		GePrint(
+			"PMX IMPORT : CANCELLED"
+		);
+
+		return FILEERROR_CANCEL;
+	}
+
+
+	const PMXImportSettings& settings =
+		dialog.GetSettings();
+
+
+	GePrint(
+		"PMX IMPORT SCALE : " +
+		String::FloatToString(
+			settings.scale
+		)
+	);
+
+
+	GePrint(
+		"PMX IMPORT MODE : " +
+		String::IntToString(
+			static_cast<Int32>(
+				settings.mode
+				)
+		)
+	);
+
+
+	// ========================================================
+	// Reader
+	// ========================================================
+
 	PMXReader reader;
 
 
 	if (!reader.Load(
 		name,
-		doc
+		doc,
+		settings
 	))
 	{
 		GePrint(
