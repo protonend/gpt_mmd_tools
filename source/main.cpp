@@ -4,6 +4,10 @@ main.cpp
 GPT MMD TOOLS
 Cinema 4D R19 PMX Scene Loader - STEP 08
 
+Cinema 4D R19
+Visual Studio 2015
+C++
+
 処理内容：
 PMXファイルをCinema 4D R19の
 Filename / BaseFile経由で直接読み込み、
@@ -46,7 +50,7 @@ STEP 08変更内容：
 ・任意の数値入力に対応。
 ・サイズはObject Scaleではなく頂点座標へ直接適用。
 ・将来のBone / Morphでも同一スケール値を使用できる構造にする。
-・Cinema 4D R19 / Visual Studio 2013互換。
+・Cinema 4D R19 / Visual Studio 2015互換。
 
 重要：
 PMXの可変Indexは「符号付き整数」ではない。
@@ -67,10 +71,6 @@ PMXの可変Indexは「符号付き整数」ではない。
 
 C4D Bitmap Shaderに保存するFilenameは
 PMXに記録されている相対テクスチャパスを使用する。
-
-Cinema 4D R19
-Visual Studio 2013
-C++
 */
 
 
@@ -138,10 +138,11 @@ public:
 
 		GroupBegin(
 			1000,
-			GROUPTYPE_ROWS,
-			1,
+			BFH_SCALEFIT,
 			0,
-			String()
+			1,
+			String(),
+			0
 		);
 
 
@@ -200,10 +201,11 @@ public:
 
 		GroupBegin(
 			1100,
-			GROUPTYPE_COLS,
+			BFH_RIGHT,
 			2,
 			0,
-			String()
+			String(),
+			0
 		);
 
 
@@ -242,7 +244,7 @@ public:
 		);
 
 
-		SetReal(
+		SetFloat(
 			1004,
 			_settings.scale,
 			0.000001,
@@ -288,7 +290,7 @@ public:
 			Float scale;
 
 
-			if (!GetReal(
+			if (!GetFloat(
 				1004,
 				scale
 			))
@@ -4186,7 +4188,7 @@ FILEERROR GPTMMDPMXLoader::Load(
 			"PMX IMPORT : CANCELLED"
 		);
 
-		return FILEERROR_CANCEL;
+		return FILEERROR_USERBREAK;
 	}
 
 
