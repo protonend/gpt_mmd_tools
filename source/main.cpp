@@ -10,71 +10,15 @@ C++
 
 処理内容：
 PMXファイルをCinema 4D R19の
-Filename / BaseFile経由で直接読み込み、
+Filename / BaseFile経由で直接読み込み。
 
-1. PMXファイルオープン
-2. PMXヘッダー解析
-3. モデル情報解析
-4. 頂点情報解析
-5. 三角形インデックス解析
-6. PMX Texture解析
-7. PMX Material解析
-8. C4D PolygonObject生成
-9. PMX Vertex Normal -> C4D NormalTag
-10. PMX Vertex UV -> C4D UVWTag
-11. PMX Material -> C4D BaseMaterial
-12. PMX Material Name -> C4D Material Name
-13. PMX Texture Path -> 絶対パスで実ファイル確認
-14. PMX Texture Path -> 相対FilenameとしてBitmap Shaderへ保存
-15. Bitmap Shader生成
-16. Bitmap Shader -> Material Color Shader
-17. Bitmap Shader -> Material Alpha Shader
-18. Material Alpha Image Alpha -> ON
-19. PMX Diffuse Alpha -> Material Alpha Color
-20. TextureTag生成
-21. MaterialごとのPolygon範囲へ割り当て
-22. Material名と同じ名前のSelectionTag生成
-23. TphongによるPhong / Smooth Tag生成
-24. ドキュメントへ挿入
-
-STEP 08.2変更内容：
-
-・STEP 08.1のPMX Readerを維持。
-・STEP 08.1のMaterial Separationを維持。
-・STEP 08.1のCombined Objectを維持。
-・インポートダイアログを日本語化。
-・インポートサイズを「最終モデル高さ」ではなく「インポート倍率」として扱う。
-・デフォルト倍率は10.0。
-・1.0 = PMX元サイズ。
-・2.0 = PMX元サイズの2倍。
-・5.0 = PMX元サイズの5倍。
-・10.0 = PMX元サイズの10倍。
-・PMX頂点Y方向Bounding Boxによるサイズ正規化は行わない。
-・PMX頂点座標へ入力倍率を直接適用する。
-・Combined / Material Separatedの両方で同一倍率を使用。
-・将来のBone / Morphでも同一インポート倍率を使用できる構造を維持。
-・STEP 08.1のTARGET SIZE関連処理を削除。
-・Cinema 4D R19 / Visual Studio 2015互換。
-
-重要：
-PMXの可変Indexは「符号付き整数」ではない。
-
-1 byte:
-0x00～0xFE = 0～254
-0xFF         = -1
-
-2 byte:
-0x0000～0xFFFE = 0～65534
-0xFFFF         = -1
-
-4 byte:
-32bit値を読み込む。
-
-テクスチャファイルの存在確認にはPMXファイル位置から
-解決した絶対パスを使用する。
-
-C4D Bitmap Shaderに保存するFilenameは
-PMXに記録されている相対テクスチャパスを使用する。
+STEP 08.2：
+・インポート倍率は直接倍率
+・デフォルト 10.0
+・Combined / Material Separated対応
+・PMX Reader維持
+・日本語ダイアログ文字列はUTF-8バイト列から生成
+Visual Studio 2015のソース文字コードに依存しない。
 */
 
 
@@ -83,6 +27,30 @@ PMXに記録されている相対テクスチャパスを使用する。
 #include "main.h"
 
 #include <vector>
+
+
+// ============================================================
+// Dialog UTF-8 String Helper
+// ============================================================
+//
+// 日本語文字列をmain.cppの文字コードに依存させない。
+// UTF-8のバイト列をASCIIのエスケープ表記で記述し、
+// Cinema 4D StringへUTF-8として変換する。
+//
+// これによりVisual Studio 2015でmain.cppが
+// Shift-JIS / UTF-8 BOM / UTF-8などどの状態でも、
+// ダイアログ文字列そのものはUTF-8として確実に解釈される。
+// ============================================================
+
+static String PMXDialogString(
+	const Char* utf8
+)
+{
+	return String(
+		utf8,
+		STRINGENCODING_UTF8
+	);
+}
 
 
 // ============================================================
@@ -150,7 +118,9 @@ public:
 	Bool CreateLayout()
 	{
 		SetTitle(
-			String("GPT MMD TOOLS - PMX インポート")
+			PMXDialogString(
+				"\107\120\124\040\115\115\104\040\124\117\117\114\123\040\055\040\120\115\130\040\343\202\244\343\203\263\343\203\235\343\203\274\343\203\210"
+			)
 		);
 
 
@@ -169,7 +139,9 @@ public:
 			BFH_LEFT,
 			0,
 			0,
-			String("インポート方式"),
+			PMXDialogString(
+				"\343\202\244\343\203\263\343\203\235\343\203\274\343\203\210\346\226\271\345\274\217"
+			),
 			0
 		);
 
@@ -185,14 +157,18 @@ public:
 		AddChild(
 			1002,
 			PMX_IMPORT_COMBINED,
-			String("1つのオブジェクト")
+			PMXDialogString(
+				"\061\343\201\244\343\201\256\343\202\252\343\203\226\343\202\270\343\202\247\343\202\257\343\203\210"
+			)
 		);
 
 
 		AddChild(
 			1002,
 			PMX_IMPORT_MATERIAL_SEPARATED,
-			String("材質ごとに分離")
+			PMXDialogString(
+				"\346\235\220\350\263\252\343\201\224\343\201\250\343\201\253\345\210\206\351\233\242"
+			)
 		);
 
 
@@ -201,7 +177,9 @@ public:
 			BFH_LEFT,
 			0,
 			0,
-			String("インポート倍率"),
+			PMXDialogString(
+				"\343\202\244\343\203\263\343\203\235\343\203\274\343\203\210\345\200\215\347\216\207"
+			),
 			0
 		);
 
@@ -232,7 +210,9 @@ public:
 			BFH_RIGHT,
 			100,
 			0,
-			String("キャンセル")
+			PMXDialogString(
+				"\343\202\255\343\203\243\343\203\263\343\202\273\343\203\253"
+			)
 		);
 
 
@@ -241,7 +221,9 @@ public:
 			BFH_RIGHT,
 			100,
 			0,
-			String("インポート")
+			PMXDialogString(
+				"\343\202\244\343\203\263\343\203\235\343\203\274\343\203\210"
+			)
 		);
 
 
@@ -320,8 +302,8 @@ public:
 			if (importScale <= 0.0)
 			{
 				MessageDialog(
-					String(
-						"インポート倍率は0より大きい値を入力してください。"
+					PMXDialogString(
+						"\343\202\244\343\203\263\343\203\235\343\203\274\343\203\210\345\200\215\347\216\207\343\201\257\060\343\202\210\343\202\212\345\244\247\343\201\215\343\201\204\345\200\244\343\202\222\345\205\245\345\212\233\343\201\227\343\201\246\343\201\217\343\201\240\343\201\225\343\201\204\343\200\202"
 					)
 				);
 
@@ -510,10 +492,6 @@ public:
 
 private:
 
-	// ========================================================
-	// Stage
-	// ========================================================
-
 	void SetStage(
 		const String& stage
 	)
@@ -521,10 +499,6 @@ private:
 		_stage = stage;
 	}
 
-
-	// ========================================================
-	// Offset String
-	// ========================================================
 
 	String GetOffsetString() const
 	{
@@ -535,10 +509,6 @@ private:
 		);
 	}
 
-
-	// ========================================================
-	// Diagnostic Failure
-	// ========================================================
 
 	Bool ReaderFailed(
 		const String& reason
@@ -566,10 +536,6 @@ private:
 		return false;
 	}
 
-
-	// ========================================================
-	// Open
-	// ========================================================
 
 	Bool Open(
 		const Filename& filename
@@ -650,10 +616,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read Bytes
-	// ========================================================
-
 	Bool ReadBytes(
 		void* buffer,
 		Int32 size
@@ -723,10 +685,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read UChar
-	// ========================================================
-
 	Bool ReadUChar(
 		UChar& value
 	)
@@ -737,10 +695,6 @@ private:
 		);
 	}
 
-
-	// ========================================================
-	// Read Int16
-	// ========================================================
 
 	Bool ReadInt16(
 		Int16& value
@@ -753,10 +707,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read Int32
-	// ========================================================
-
 	Bool ReadInt32(
 		Int32& value
 	)
@@ -767,10 +717,6 @@ private:
 		);
 	}
 
-
-	// ========================================================
-	// Read UInt16
-	// ========================================================
 
 	Bool ReadUInt16(
 		UInt16& value
@@ -783,10 +729,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read UInt32
-	// ========================================================
-
 	Bool ReadUInt32(
 		UInt32& value
 	)
@@ -798,10 +740,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read Float32
-	// ========================================================
-
 	Bool ReadFloat32(
 		Float32& value
 	)
@@ -812,10 +750,6 @@ private:
 		);
 	}
 
-
-	// ========================================================
-	// Read Vector3
-	// ========================================================
 
 	Bool ReadVector3(
 		Vector& value
@@ -848,10 +782,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Read Additional UV
-	// ========================================================
-
 	Bool ReadAdditionalUV()
 	{
 		Float32 x;
@@ -877,10 +807,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Valid Index Size
-	// ========================================================
-
 	Bool IsValidIndexSize(
 		UChar size
 	)
@@ -897,10 +823,6 @@ private:
 		return false;
 	}
 
-
-	// ========================================================
-	// Read PMX Index
-	// ========================================================
 
 	Bool ReadIndex(
 		UChar indexSize,
@@ -968,10 +890,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Vertex Failure Diagnostic
-	// ========================================================
-
 	Bool VertexReadFailed(
 		Int32 vertexIndex,
 		const String& stage,
@@ -1020,10 +938,6 @@ private:
 		return false;
 	}
 
-
-	// ========================================================
-	// PMX String
-	// ========================================================
 
 	Bool ReadPMXString(
 		String* result = nullptr
@@ -1190,10 +1104,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Header
-	// ========================================================
 
 	Bool ReadHeader()
 	{
@@ -1434,10 +1344,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Model Information
-	// ========================================================
-
 	Bool ReadModelInfo()
 	{
 		SetStage(
@@ -1472,10 +1378,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Vertices
-	// ========================================================
 
 	Bool ReadVertices(
 		std::vector<PMXVertex>& vertices
@@ -1736,10 +1638,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Faces
-	// ========================================================
-
 	Bool ReadFaces(
 		const std::vector<PMXVertex>& vertices,
 		std::vector<Int32>& indices
@@ -1896,10 +1794,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Face Validation
-	// ========================================================
-
 	Bool ValidateFaces(
 		const std::vector<PMXVertex>& vertices,
 		const std::vector<Int32>& indices
@@ -1984,10 +1878,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Textures
-	// ========================================================
 
 	Bool ReadTextures(
 		std::vector<PMXTexture>& textures
@@ -2082,10 +1972,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Materials
-	// ========================================================
 
 	Bool ReadMaterials(
 		std::vector<PMXMaterial>& materials
@@ -2435,10 +2321,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Material Validation
-	// ========================================================
-
 	Bool ValidateMaterials(
 		const std::vector<PMXMaterial>& materials,
 		Int32 geometryPolygonCount
@@ -2533,10 +2415,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Normal Tag
-	// ========================================================
 
 	Bool CreateNormalTag(
 		PolygonObject* object,
@@ -2643,10 +2521,6 @@ private:
 	}
 
 
-	// ========================================================
-	// UVW Tag
-	// ========================================================
-
 	Bool CreateUVW(
 		PolygonObject* object,
 		const std::vector<PMXVertex>& vertices,
@@ -2739,10 +2613,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Phong / Smooth Tag
-	// ========================================================
-
 	Bool CreateSmoothTag(
 		PolygonObject* object
 	)
@@ -2775,10 +2645,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Create C4D Material
-	// ========================================================
 
 	BaseMaterial* CreateC4DMaterial(
 		const PMXMaterial& pmxMaterial,
@@ -2840,10 +2706,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Build Absolute Texture Filename
-	// ========================================================
-
 	Filename BuildTextureFilename(
 		const Filename& pmxFilename,
 		const String& texturePath
@@ -2861,10 +2723,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Build Relative Texture Filename
-	// ========================================================
-
 	Filename BuildRelativeTextureFilename(
 		const String& texturePath
 	)
@@ -2880,10 +2738,6 @@ private:
 		return relativeTextureFile;
 	}
 
-
-	// ========================================================
-	// Create Bitmap Shader
-	// ========================================================
 
 	BaseShader* CreateBitmapShader(
 		BaseMaterial* material,
@@ -3030,10 +2884,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Create Material Selection Tag
-	// ========================================================
-
 	Bool CreateMaterialSelection(
 		PolygonObject* object,
 		const PMXMaterial& material,
@@ -3105,10 +2955,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Create Material Texture Tag
-	// ========================================================
 
 	Bool CreateMaterialTag(
 		PolygonObject* object,
@@ -3183,10 +3029,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Create Combined Object
-	// ========================================================
 
 	PolygonObject* BuildCombinedObject(
 		const std::vector<PMXVertex>& vertices,
@@ -3318,10 +3160,6 @@ private:
 		return object;
 	}
 
-
-	// ========================================================
-	// Create Material Object
-	// ========================================================
 
 	PolygonObject* BuildMaterialObject(
 		const std::vector<PMXVertex>& vertices,
@@ -3615,10 +3453,6 @@ private:
 	}
 
 
-	// ========================================================
-	// Setup Material
-	// ========================================================
-
 	Bool SetupMaterial(
 		PolygonObject* object,
 		BaseDocument* doc,
@@ -3708,10 +3542,6 @@ private:
 		return true;
 	}
 
-
-	// ========================================================
-	// Load
-	// ========================================================
 
 public:
 
