@@ -16,6 +16,7 @@ PMXReaderクラスを宣言する。
 #include "c4d.h"
 #include "pmx_types.h"
 #include "pmx_dialog.h"
+#include "pmx_bone.h"
 
 #include <vector>
 
@@ -117,6 +118,9 @@ public:
 	Bool ReadMaterials(
 		std::vector<PMXMaterial>& materials
 	);
+	Bool ReadBones(
+		std::vector<PMXBone>& bones
+	);
 	Bool ValidateMaterials(
 		const std::vector<PMXMaterial>& materials,
 		Int32 geometryPolygonCount
@@ -168,13 +172,17 @@ public:
 	PolygonObject* BuildCombinedObject(
 		const std::vector<PMXVertex>& vertices,
 		const std::vector<Int32>& indices,
-		Float scale
+		Float scale,
+		BaseDocument* doc,
+		const std::vector<BaseObject*>& boneObjects
 	);
 	PolygonObject* BuildMaterialObject(
 		const std::vector<PMXVertex>& vertices,
 		const std::vector<Int32>& indices,
 		const PMXMaterial& material,
-		Float scale
+		Float scale,
+		BaseDocument* doc,
+		const std::vector<BaseObject*>& boneObjects
 	);
 	Bool SetupMaterial(
 		PolygonObject* object,

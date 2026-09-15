@@ -2,7 +2,7 @@
 main.cpp
 
 GPT MMD TOOLS
-Cinema 4D R19 PMX Scene Loader - STEP 08.2 / SPLIT 02
+Cinema 4D R19 PMX Scene Loader - STEP 09 / SPLIT 03
 
 Cinema 4D R19
 Visual Studio 2015
@@ -12,7 +12,7 @@ C++
 PMXファイルをCinema 4D R19の
 Filename / BaseFile経由で直接読み込み。
 
-STEP 08.2：
+STEP 09：
 ・インポート倍率は直接倍率
 ・デフォルト 10.0
 ・Combined / Material Separated対応
@@ -91,7 +91,7 @@ FILEERROR GPTMMDPMXLoader::Load(
 
 
 	GePrint(
-		"PMX SCENE LOADER - STEP 08.2"
+		"PMX SCENE LOADER - STEP 09"
 	);
 
 
