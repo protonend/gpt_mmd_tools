@@ -6,17 +6,30 @@ Cinema 4D R19 PMX Scene Loader
 
 処理内容：
 PMXボーン階層をC4D Joint階層へ変換し、
-PMXのBDEF1/BDEF2/BDEF4/SDEF/QDEFウェイトを
+PMXのBDEF1/BDEF2/BDEF4/SDEFウェイトを
 C4D R19のCAWeightTag + Oskinへ設定する。
+
+SDEFについて：
+SDEF固有のC/R0/R1による特殊変形は使用せず、
+BDEF2相当の2ボーンウェイトとしてC4D Skinへ変換する。
+
+QDEFについて：
+現時点では特別な変形処理を行わない。
 */
 
 #include "pmx_bone.h"
-
 #include <lib_ca.h>
 
 
 namespace
 {
+	static const UChar PMX_WEIGHT_BDEF1 = 0;
+	static const UChar PMX_WEIGHT_BDEF2 = 1;
+	static const UChar PMX_WEIGHT_BDEF4 = 2;
+	static const UChar PMX_WEIGHT_SDEF = 3;
+	static const UChar PMX_WEIGHT_QDEF = 4;
+
+
 	static Vector ScaledPosition(
 		const Vector& position,
 		Float scale
@@ -37,6 +50,75 @@ namespace
 			return 1.0;
 
 		return weight;
+	}
+
+
+	// ========================================================
+	// SDEF -> BDEF2相当
+	//
+	// SDEFのPMX固有情報
+	//   C
+	//   R0
+	//   R1
+	//
+	// はC4D Skinのウェイト計算には使用しない。
+	//
+	// SDEFは2本のボーンと1つのウェイトを持つため、
+	// 通常の2ボーンウェイトとして扱う。
+	// ========================================================
+	static Int32 GetEffectiveInfluenceCount(
+		const PMXVertex& vertex
+	)
+	{
+		if (vertex.weightType == PMX_WEIGHT_SDEF)
+		{
+			return 2;
+		}
+
+		return static_cast<Int32>(
+			vertex.weightCount
+			);
+	}
+
+
+	static Float GetEffectiveWeight(
+		const PMXVertex& vertex,
+		Int32 influence
+	)
+	{
+		if (vertex.weightType == PMX_WEIGHT_SDEF)
+		{
+			if (influence == 0)
+			{
+				return ClampWeight(
+					static_cast<Float>(
+						vertex.boneWeights[0]
+						)
+				);
+			}
+
+			if (influence == 1)
+			{
+				const Float weight0 =
+					ClampWeight(
+						static_cast<Float>(
+							vertex.boneWeights[0]
+							)
+					);
+
+				return ClampWeight(
+					1.0 - weight0
+				);
+			}
+
+			return 0.0;
+		}
+
+		return ClampWeight(
+			static_cast<Float>(
+				vertex.boneWeights[influence]
+				)
+		);
 	}
 }
 
@@ -67,7 +149,6 @@ Bool PMXBoneBuilder::BuildBones(
 		BaseObject::Alloc(
 			Onull
 		);
-
 
 	if (!root)
 		return false;
@@ -113,14 +194,12 @@ Bool PMXBoneBuilder::BuildBones(
 				Ojoint
 			);
 
-
 		if (!joint)
 			return false;
 
 
 		String name =
 			bones[i].name;
-
 
 		if (name == String())
 		{
@@ -154,7 +233,6 @@ Bool PMXBoneBuilder::BuildBones(
 	{
 		BaseObject* joint =
 			boneObjects[i];
-
 
 		if (!joint)
 			return false;
@@ -231,7 +309,6 @@ Bool PMXBoneBuilder::BuildBones(
 		"PMX BONE OBJECTS : CREATED"
 	);
 
-
 	GePrint(
 		"  BONE COUNT = " +
 		String::IntToString(
@@ -266,9 +343,9 @@ Bool PMXBoneBuilder::SetVertexWeights(
 
 
 	const Int32 influenceCount =
-		static_cast<Int32>(
-			vertex.weightCount
-			);
+		GetEffectiveInfluenceCount(
+			vertex
+		);
 
 
 	for (
@@ -306,10 +383,9 @@ Bool PMXBoneBuilder::SetVertexWeights(
 
 
 		const Float weight =
-			ClampWeight(
-				static_cast<Float>(
-					vertex.boneWeights[i]
-					)
+			GetEffectiveWeight(
+				vertex,
+				i
 			);
 
 
@@ -389,7 +465,6 @@ Bool PMXBoneBuilder::CreateWeightTag(
 
 	CAWeightTag* weightTag =
 		CAWeightTag::Alloc();
-
 
 	if (!weightTag)
 		return false;
@@ -474,9 +549,6 @@ Bool PMXBoneBuilder::CreateWeightTag(
 
 	// ========================================================
 	// Create Oskin
-	//
-	// C4D_MMD_Tool reference:
-	// CAWeightTag + Oskin
 	// ========================================================
 
 	BaseObject* skinObject =
@@ -544,13 +616,31 @@ Bool PMXBoneBuilder::CreateWeightTag(
 
 
 	// ========================================================
-	// Convert PMX vertex weights
-	// into joint weight maps.
+	// Diagnostics
 	// ========================================================
 
 	Int32 weightedPointCount = 0;
 	Int32 zeroWeightPointCount = 0;
 
+	Int32 bdef1Count = 0;
+	Int32 bdef2Count = 0;
+	Int32 bdef4Count = 0;
+	Int32 sdefCount = 0;
+	Int32 qdefCount = 0;
+	Int32 unknownWeightTypeCount = 0;
+
+
+	// ========================================================
+	// Convert PMX vertex weights
+	//
+	// SDEF:
+	//   BDEF2相当として処理
+	//
+	//   bone[0] = weight
+	//   bone[1] = 1 - weight
+	//
+	// C / R0 / R1 は使用しない。
+	// ========================================================
 
 	for (
 		Int32 pointIndex = 0;
@@ -604,13 +694,45 @@ Bool PMXBoneBuilder::CreateWeightTag(
 			];
 
 
+		// ====================================================
+		// Weight type count
+		// ====================================================
+
+		switch (vertex.weightType)
+		{
+		case PMX_WEIGHT_BDEF1:
+			++bdef1Count;
+			break;
+
+		case PMX_WEIGHT_BDEF2:
+			++bdef2Count;
+			break;
+
+		case PMX_WEIGHT_BDEF4:
+			++bdef4Count;
+			break;
+
+		case PMX_WEIGHT_SDEF:
+			++sdefCount;
+			break;
+
+		case PMX_WEIGHT_QDEF:
+			++qdefCount;
+			break;
+
+		default:
+			++unknownWeightTypeCount;
+			break;
+		}
+
+
 		Bool hasWeight = false;
 
 
 		const Int32 influenceCount =
-			static_cast<Int32>(
-				vertex.weightCount
-				);
+			GetEffectiveInfluenceCount(
+				vertex
+			);
 
 
 		for (
@@ -651,12 +773,9 @@ Bool PMXBoneBuilder::CreateWeightTag(
 
 			const Float32 weight =
 				static_cast<Float32>(
-					ClampWeight(
-						static_cast<Float>(
-							vertex.boneWeights[
-								influence
-							]
-							)
+					GetEffectiveWeight(
+						vertex,
+						influence
 					)
 					);
 
@@ -824,6 +943,62 @@ Bool PMXBoneBuilder::CreateWeightTag(
 		"  ZERO WEIGHT POINT COUNT = " +
 		String::IntToString(
 			zeroWeightPointCount
+		)
+	);
+
+
+	GePrint(
+		"  BDEF1 VERTICES = " +
+		String::IntToString(
+			bdef1Count
+		)
+	);
+
+
+	GePrint(
+		"  BDEF2 VERTICES = " +
+		String::IntToString(
+			bdef2Count
+		)
+	);
+
+
+	GePrint(
+		"  BDEF4 VERTICES = " +
+		String::IntToString(
+			bdef4Count
+		)
+	);
+
+
+	GePrint(
+		"  SDEF VERTICES = " +
+		String::IntToString(
+			sdefCount
+		)
+	);
+
+
+	GePrint(
+		"  SDEF AS BDEF2 = " +
+		String::IntToString(
+			sdefCount
+		)
+	);
+
+
+	GePrint(
+		"  QDEF VERTICES = " +
+		String::IntToString(
+			qdefCount
+		)
+	);
+
+
+	GePrint(
+		"  UNKNOWN WEIGHT TYPE = " +
+		String::IntToString(
+			unknownWeightTypeCount
 		)
 	);
 
