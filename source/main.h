@@ -1,12 +1,12 @@
-/*
+ï»¿/*
 main.h
 
 GPT MMD TOOLS
 Cinema 4D R19 PMX Scene Loader
 
-ˆ—“à—eF
-PMX Scene Loader–{‘Ì‚ÌƒNƒ‰ƒXéŒ¾‚Æ
-ƒvƒ‰ƒOƒCƒ“ID‚ğ’è‹`‚·‚éB
+å‡¦ç†å†…å®¹ï¼š
+PMX Scene Loaderæœ¬ä½“ã®ã‚¯ãƒ©ã‚¹å®£è¨€ã¨
+ãƒ—ãƒ©ã‚°ã‚¤ãƒ³IDã‚’å®šç¾©ã™ã‚‹ã€‚
 */
 
 #ifndef GPT_MMD_TOOLS_MAIN_H__
@@ -15,14 +15,11 @@ PMX Scene Loader–{‘Ì‚ÌƒNƒ‰ƒXéŒ¾‚Æ
 #include "c4d.h"
 #include "c4d_filterdata.h"
 
-
 #define GPT_MMD_TOOLS_PMX_ID 1059999
-
 
 class GPTMMDPMXLoader : public SceneLoaderData
 {
 public:
-
 	virtual Bool Identify(
 		BaseSceneLoader* node,
 		const Filename& name,
@@ -41,6 +38,5 @@ public:
 
 	static NodeData* Alloc();
 };
-
 
 #endif
